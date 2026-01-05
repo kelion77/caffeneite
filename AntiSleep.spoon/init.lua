@@ -1,13 +1,12 @@
 --- === AntiSleep ===
 ---
---- Prevents macOS from sleeping using caffeinate + keystroke simulation.
---- Useful for bypassing MDM idle detection.
+--- Smart sleep management for Claude Code sessions.
+--- Monitors user activity + Claude API traffic, triggers sleep when both are idle.
 ---
 --- Features:
----   - Caffeinate integration (prevents sleep)
----   - Keystroke simulation (bypasses idle detection)
----   - Gradual screen dimming (saves power, looks natural)
----   - Traffic-based auto stop (stops when Claude Code is idle)
+---   - Traffic-based auto sleep (sleeps when both user and Claude are idle)
+---   - Wake notification (shows when auto-sleep occurred)
+---   - Gradual screen dimming (saves power while waiting)
 
 local obj = {}
 obj.__index = obj
@@ -21,22 +20,28 @@ obj.homepage = "https://github.com/yourusername/AntiSleep.spoon"
 
 -- Internal state
 obj.enabled = false
-obj.caffeinateTask = nil
-obj.keystrokeTimer = nil
 obj.dimTimer = nil
-obj.trafficCheckTimer = nil
+obj.idleCheckTimer = nil
 obj.menubar = nil
 obj.originalBrightness = nil
 obj.currentBrightness = nil
 obj.startTime = nil
-obj.lastTotalBytes = 0
-obj.lastTrafficDelta = 0
-obj.idleCheckCount = 0
+obj.lastClaudeBytes = nil         -- for Claude delta calculation
+obj.lastCursorBytes = nil         -- for Cursor delta calculation
+obj.consecutiveIdleSeconds = 0
 obj.lastUserActivityTime = nil
 obj.userActivityWatcher = nil
+obj.sleepWatcher = nil
+obj.sleepTriggeredByUs = false
+obj.lastSleepTime = nil
+obj.sleepOccurredWhileLocked = false  -- track if sleep happened while screen locked
+obj.screenLockedTime = nil            -- when screen was locked (for prevention time calc)
+obj.preventionDuration = nil          -- how long sleep was prevented (lock → sleep)
+obj.isScreenLocked = false        -- track if screen is locked
+obj.caffeinateTask = nil          -- caffeinate process for sleep prevention
+obj.isCaffeinateRunning = false   -- track caffeinate state
 
 -- Configuration
-obj.keystrokeInterval = 60      -- seconds between keystrokes
 obj.showMenubar = true          -- show menubar icon
 obj.showAlerts = true           -- show on/off alerts
 
@@ -47,16 +52,27 @@ obj.dimInterval = 60            -- dim every 60 seconds
 obj.dimStep = 5                 -- reduce brightness by 5% each step
 obj.dimMinBrightness = 20       -- minimum brightness (%)
 
--- Traffic monitoring configuration
-obj.enableTrafficWatch = true   -- enable traffic-based auto stop
-obj.trafficGracePeriod = 60     -- grace period before checking traffic (1 min for testing)
-obj.trafficCheckInterval = 60   -- check traffic every 60 seconds
-obj.idleThreshold = 2           -- stop after N consecutive idle checks
-obj.minTrafficBytes = 100       -- minimum bytes delta to consider "active"
-obj.userIdleThreshold = 120     -- user idle seconds to consider "inactive" (2 min)
+-- Sleep trigger configuration
+obj.sleepIdleMinutes = 2        -- trigger sleep after X minutes of combined idle
+obj.enableAutoSleep = true      -- enable automatic sleep trigger
+obj.idleCheckInterval = 60      -- check idle status every 60 seconds
+obj.minTrafficBytes = 100       -- minimum bytes delta to consider Claude "active"
+obj.userIdleThreshold = 120     -- user idle seconds to consider user "inactive" (2 min)
 
--- Anthropic API IP pattern
-obj.anthropicIpPattern = "160.79.104"
+-- API IP patterns
+obj.claudeIpPatterns = {
+    "160.79.104",   -- Anthropic (Claude Code)
+}
+-- Cursor IP patterns (from official domains: *.cursor.sh, *.cursor-cdn.com)
+-- These are specific ranges, not broad AWS/Cloudflare
+obj.cursorIpPatterns = {
+    "100.51",       -- api2.cursor.sh
+    "100.52",       -- api2.cursor.sh
+    "104.26.8",     -- cursor-cdn.com
+    "104.26.9",     -- cursor-cdn.com
+    "172.67.71",    -- cursor-cdn.com
+    "76.76.21",     -- cursor.sh (Vercel)
+}
 
 --- AntiSleep:init()
 --- Method
@@ -72,7 +88,7 @@ function obj:init()
         end
     end
     self:updateMenubar()
-    print("[AntiSleep] Initialized (orphan caffeinate cleaned)")
+    print("[AntiSleep] Initialized")
     return self
 end
 
@@ -80,7 +96,9 @@ end
 --- Method
 --- Format bytes to human readable string
 function obj:formatBytes(bytes)
-    if bytes < 1024 then
+    if not bytes or bytes < 0 then
+        return "0 B"
+    elseif bytes < 1024 then
         return string.format("%d B", bytes)
     elseif bytes < 1024 * 1024 then
         return string.format("%.1f KB", bytes / 1024)
@@ -104,20 +122,23 @@ function obj:updateMenubar()
             local mins = math.floor(secs / 60)
             elapsed = string.format(" (%dm)", mins)
 
-            if self.enableTrafficWatch then
-                local graceRemaining = self.trafficGracePeriod - secs
-                if graceRemaining > 0 then
-                    status = string.format("\nGrace: %dm left", math.ceil(graceRemaining / 60))
-                else
-                    status = string.format("\nLast: %s/min (idle: %d/%d)",
-                        self:formatBytes(self.lastTrafficDelta),
-                        self.idleCheckCount,
-                        self.idleThreshold)
+            -- Show screen lock status
+            status = string.format("\nScreen: %s", self.isScreenLocked and "LOCKED" or "unlocked")
+
+            -- Show idle countdown if screen is locked and idle time is accumulating
+            if self.isScreenLocked and self.consecutiveIdleSeconds > 0 then
+                local sleepThresholdSecs = self.sleepIdleMinutes * 60
+                local remaining = sleepThresholdSecs - self.consecutiveIdleSeconds
+                if remaining > 0 then
+                    status = status .. string.format("\nSleep in: %ds", remaining)
                 end
             end
+
+            -- Show caffeinate status
+            status = status .. string.format("\nCaffeinate: %s", self.isCaffeinateRunning and "ON" or "OFF")
         end
-        self.menubar:setTitle("☕")
-        tooltip = tooltip .. "ON" .. elapsed .. " (click to toggle)" .. status
+        self.menubar:setTitle("👁")
+        tooltip = tooltip .. "Monitoring" .. elapsed .. status
     else
         self.menubar:setTitle("💤")
         tooltip = tooltip .. "OFF (click to toggle)"
@@ -126,19 +147,9 @@ function obj:updateMenubar()
     self.menubar:setTooltip(tooltip)
 end
 
---- AntiSleep:simulateKeystroke()
---- Method
---- Simulate a keystroke to prevent idle detection
-function obj:simulateKeystroke()
-    hs.eventtap.event.newKeyEvent(hs.keycodes.map.shift, true):post()
-    hs.timer.usleep(50000)
-    hs.eventtap.event.newKeyEvent(hs.keycodes.map.shift, false):post()
-end
-
 --- AntiSleep:isUserActive()
 --- Method
---- Check if user is actively using the computer (based on mouse activity only)
---- Note: We track mouse only because we simulate keyboard, so hs.host.idleTime() won't work
+--- Check if user is actively using the computer (based on mouse/keyboard activity)
 function obj:isUserActive()
     if not self.lastUserActivityTime then return false end
     local idleTime = os.time() - self.lastUserActivityTime
@@ -192,102 +203,281 @@ function obj:restoreBrightness()
     end
 end
 
---- AntiSleep:getAnthropicTrafficBytes()
+--- AntiSleep:getTrafficBytesSeparate()
 --- Method
---- Get total bytes transferred to/from Anthropic API using netstat -b
-function obj:getAnthropicTrafficBytes()
-    -- netstat -b shows: ... recv_bytes send_bytes (last two columns)
-    -- Filter for Anthropic API IP (160.79.104.*)
-    local cmd = string.format(
-        "netstat -b 2>/dev/null | grep '%s' | awk '{sum += $(NF-1) + $NF} END {print sum+0}'",
-        self.anthropicIpPattern
-    )
+--- Get bytes transferred separately for Claude and Cursor
+function obj:getTrafficBytesSeparate()
+    local claudeBytes = 0
+    local cursorBytes = 0
 
-    local output, status = hs.execute(cmd)
+    -- Get Claude traffic (bytes via netstat - Anthropic IP is unique)
+    local claudePattern = table.concat(self.claudeIpPatterns, "|")
+    local claudeCmd = string.format(
+        "netstat -b 2>/dev/null | grep -E '%s' | awk '{sum += $(NF-1) + $NF} END {print sum+0}'",
+        claudePattern
+    )
+    local output, status = hs.execute(claudeCmd)
     if status and output then
-        local bytes = tonumber(output:match("%d+")) or 0
-        return bytes
+        claudeBytes = tonumber(output:match("%d+")) or 0
     end
 
-    return 0
+    -- Get Cursor traffic (bytes via netstat - using specific Cursor domain IPs)
+    local cursorPattern = table.concat(self.cursorIpPatterns, "|")
+    local cursorCmd = string.format(
+        "netstat -b 2>/dev/null | grep -E '%s' | awk '{sum += $(NF-1) + $NF} END {print sum+0}'",
+        cursorPattern
+    )
+    output, status = hs.execute(cursorCmd)
+    if status and output then
+        cursorBytes = tonumber(output:match("%d+")) or 0
+    end
+
+    return claudeBytes, cursorBytes
 end
 
---- AntiSleep:checkTraffic()
+--- AntiSleep:getApiTrafficBytes()
 --- Method
---- Check if there's Claude Code traffic, stop if idle
-function obj:checkTraffic()
-    if not self.enabled or not self.enableTrafficWatch then return end
-    if not self.startTime then return end
+--- Get total bytes transferred to/from AI APIs (Anthropic + Cursor) using netstat -b
+function obj:getApiTrafficBytes()
+    local claudeBytes, cursorBytes = self:getTrafficBytesSeparate()
+    return claudeBytes + cursorBytes
+end
 
-    local elapsed = os.time() - self.startTime
+--- AntiSleep:startCaffeinate()
+--- Method
+--- Start caffeinate to prevent idle system sleep (but allow display sleep for Lock)
+function obj:startCaffeinate()
+    if self.isCaffeinateRunning then return end
 
-    -- Still in grace period
-    if elapsed < self.trafficGracePeriod then
-        self:updateMenubar()
-        return
-    end
+    -- Use -i only: prevent idle system sleep, but allow display sleep (Lock works)
+    self.caffeinateTask = hs.task.new("/usr/bin/caffeinate", nil, {"-i"})
+    self.caffeinateTask:start()
+    self.isCaffeinateRunning = true
 
-    -- Get current total bytes from Anthropic API connections
-    local currentBytes = self:getAnthropicTrafficBytes()
-    local delta = 0
+    local logMsg = "[AntiSleep] Caffeinate started (sleep prevention ON)"
+    print(logMsg)
+    local f = io.open("/tmp/antisleep.log", "a")
+    if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+end
 
-    if self.lastTotalBytes > 0 then
-        delta = currentBytes - self.lastTotalBytes
-        -- Handle counter reset (new connections replace old ones)
-        if delta < 0 then
-            delta = currentBytes
+--- AntiSleep:stopCaffeinate()
+--- Method
+--- Stop caffeinate to allow system sleep
+function obj:stopCaffeinate()
+    if not self.isCaffeinateRunning then return end
+
+    if self.caffeinateTask then
+        if self.caffeinateTask:isRunning() then
+            self.caffeinateTask:terminate()
         end
+        self.caffeinateTask = nil
     end
+    -- Force kill as backup
+    hs.execute("killall caffeinate 2>/dev/null")
+    self.isCaffeinateRunning = false
 
-    self.lastTotalBytes = currentBytes
-    self.lastTrafficDelta = delta
+    local logMsg = "[AntiSleep] Caffeinate stopped (sleep prevention OFF)"
+    print(logMsg)
+    local f = io.open("/tmp/antisleep.log", "a")
+    if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+end
 
-    -- Check user activity (mouse-based, not hs.host.idleTime which our keystrokes reset)
-    local userIdle = self:getUserIdleTime()
-    local userActive = self:isUserActive()
+--- AntiSleep:triggerSleep()
+--- Method
+--- Trigger system sleep via pmset sleepnow
+function obj:triggerSleep()
+    -- Record that WE triggered this sleep
+    self.sleepTriggeredByUs = true
+    self.lastSleepTime = os.time()
 
-    -- Log for debugging (print to console and file)
-    local logMsg = string.format("[AntiSleep] Traffic check: total=%d, delta=%d, idle=%d/%d, user=%ds",
-        currentBytes, delta, self.idleCheckCount, self.idleThreshold, math.floor(userIdle))
+    local sleepTime = os.date("%Y-%m-%d %H:%M:%S")
+    local runDuration = math.floor((os.time() - self.startTime) / 60)
+
+    -- Log the event
+    local logMsg = string.format("[AntiSleep] Auto-sleep triggered at %s (ran for %d min)", sleepTime, runDuration)
     print(logMsg)
     local f = io.open("/tmp/antisleep.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
-    if delta >= self.minTrafficBytes or userActive then
-        -- Active traffic OR user active, reset idle counter
-        self.idleCheckCount = 0
-        self:updateMenubar()
-    else
-        -- No traffic AND user idle, increment idle counter
-        self.idleCheckCount = self.idleCheckCount + 1
+    -- Trigger sleep via pmset
+    hs.execute("pmset sleepnow")
+end
 
-        if self.idleCheckCount >= self.idleThreshold then
-            -- Idle for too long, stop
-            local stopTime = os.date("%Y-%m-%d %H:%M:%S")
-            local runDuration = math.floor((os.time() - self.startTime) / 60)
-            local logMsg = string.format("AntiSleep auto-stopped at %s (ran for %d min)", stopTime, runDuration)
-            print("[AntiSleep] " .. logMsg)
+--- AntiSleep:setupSleepWatcher()
+--- Method
+--- Setup watcher to detect system wake and screen lock events
+function obj:setupSleepWatcher()
+    local self_ref = self
+    self.sleepWatcher = hs.caffeinate.watcher.new(function(eventType)
+        -- Log ALL events to file for debugging
+        local eventNames = {
+            [hs.caffeinate.watcher.systemDidWake] = "systemDidWake",
+            [hs.caffeinate.watcher.systemWillSleep] = "systemWillSleep",
+            [hs.caffeinate.watcher.systemWillPowerOff] = "systemWillPowerOff",
+            [hs.caffeinate.watcher.screensDidSleep] = "screensDidSleep",
+            [hs.caffeinate.watcher.screensDidWake] = "screensDidWake",
+            [hs.caffeinate.watcher.screensDidLock] = "screensDidLock",
+            [hs.caffeinate.watcher.screensDidUnlock] = "screensDidUnlock",
+            [hs.caffeinate.watcher.sessionDidResignActive] = "sessionDidResignActive",
+            [hs.caffeinate.watcher.sessionDidBecomeActive] = "sessionDidBecomeActive",
+        }
+        local eventName = eventNames[eventType] or ("unknown:" .. tostring(eventType))
+        local logMsg = string.format("[AntiSleep] Event: %s", eventName)
+        print(logMsg)
+        local f = io.open("/tmp/antisleep.log", "a")
+        if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
-            -- System notification (stays in Notification Center)
-            hs.notify.new({
-                title = "AntiSleep Auto-Stopped",
-                informativeText = string.format("Stopped: %s\nRan for: %d minutes\nReason: No Claude traffic", stopTime, runDuration),
-                withdrawAfter = 0  -- Don't auto-dismiss, keep in Notification Center
-            }):send()
-
-            if self.showAlerts then
-                hs.alert.show("😴 AntiSleep stopped - " .. stopTime, 3)
+        if eventType == hs.caffeinate.watcher.systemDidWake then
+            self_ref:onSystemWake()
+        elseif eventType == hs.caffeinate.watcher.screensDidLock then
+            self_ref.isScreenLocked = true
+            self_ref.screenLockedTime = os.time()  -- record lock time for prevention calc
+        elseif eventType == hs.caffeinate.watcher.screensDidUnlock then
+            self_ref.isScreenLocked = false
+            self_ref.screenLockedTime = nil
+            self_ref.consecutiveIdleSeconds = 0  -- reset idle counter on unlock
+        elseif eventType == hs.caffeinate.watcher.screensDidSleep then
+            -- Screen turned off (display sleep)
+            self_ref.isScreenLocked = true
+        elseif eventType == hs.caffeinate.watcher.screensDidWake then
+            -- Screen turned on but might still be locked
+            -- Don't change isScreenLocked here, wait for screensDidUnlock
+        elseif eventType == hs.caffeinate.watcher.systemWillSleep then
+            -- Record sleep time if screen is locked (for wake notification)
+            if self_ref.isScreenLocked then
+                self_ref.sleepOccurredWhileLocked = true
+                self_ref.lastSleepTime = os.time()
+                -- Calculate prevention time (lock → sleep)
+                if self_ref.screenLockedTime then
+                    self_ref.preventionDuration = os.time() - self_ref.screenLockedTime
+                else
+                    self_ref.preventionDuration = 0
+                end
             end
-            self:stop()
-        else
-            self:updateMenubar()
+        end
+    end)
+    self.sleepWatcher:start()
+    print("[AntiSleep] Sleep watcher started")
+end
+
+--- AntiSleep:onSystemWake()
+--- Method
+--- Handle system wake event - show notification if sleep occurred while screen was locked
+function obj:onSystemWake()
+    -- Show notification if sleep occurred while screen was locked
+    if self.sleepOccurredWhileLocked and self.lastSleepTime then
+        local sleepDuration = os.time() - self.lastSleepTime
+        local sleepMins = math.floor(sleepDuration / 60)
+        local preventionMins = math.floor((self.preventionDuration or 0) / 60)
+
+        -- Determine reason
+        local reason = self.sleepTriggeredByUs and "Claude/Cursor idle" or "System idle"
+
+        -- Log wake event
+        local logMsg = string.format("[AntiSleep] Woke from sleep (prevented: %d min, slept: %d min, reason: %s)",
+            preventionMins, sleepMins, reason)
+        print(logMsg)
+        local f = io.open("/tmp/antisleep.log", "a")
+        if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+
+        -- System notification (stays in Notification Center)
+        hs.notify.new({
+            title = "AntiSleep: Sleep Occurred",
+            informativeText = string.format(
+                "Prevented: %d min\nSlept: %d min\nReason: %s",
+                preventionMins,
+                sleepMins,
+                reason
+            ),
+            withdrawAfter = 0  -- Keep in Notification Center
+        }):send()
+
+        if self.showAlerts then
+            hs.alert.show(string.format("😴 Prevented %d min, slept %d min", preventionMins, sleepMins), 5)
         end
     end
+
+    -- Reset flags
+    self.sleepTriggeredByUs = false
+    self.sleepOccurredWhileLocked = false
+    self.lastSleepTime = nil
+    self.preventionDuration = nil
+    self.consecutiveIdleSeconds = 0
+end
+
+--- AntiSleep:checkIdleAndSleep()
+--- Method
+--- Check if screen is locked and AI tools are idle, trigger sleep if threshold reached
+function obj:checkIdleAndSleep()
+    if not self.enabled or not self.enableAutoSleep then return end
+    if not self.startTime then return end
+
+    -- Get traffic bytes for Claude and Cursor
+    local claudeBytes, cursorBytes = self:getTrafficBytesSeparate()
+
+    -- Calculate Claude delta
+    local claudeDelta = 0
+    if self.lastClaudeBytes then
+        claudeDelta = claudeBytes - self.lastClaudeBytes
+        if claudeDelta < 0 then claudeDelta = claudeBytes end
+    end
+    self.lastClaudeBytes = claudeBytes
+
+    -- Calculate Cursor delta
+    local cursorDelta = 0
+    if self.lastCursorBytes then
+        cursorDelta = cursorBytes - self.lastCursorBytes
+        if cursorDelta < 0 then cursorDelta = cursorBytes end
+    end
+    self.lastCursorBytes = cursorBytes
+
+    -- Determine activity status (either one active = not idle)
+    local claudeActive = claudeDelta >= self.minTrafficBytes
+    local cursorActive = cursorDelta >= self.minTrafficBytes
+    local isIdle = not claudeActive and not cursorActive
+
+    -- Manage caffeinate based on activity
+    if isIdle then
+        self:stopCaffeinate()
+    else
+        self:startCaffeinate()
+    end
+
+    -- Update idle counter first, then log
+    local sleepThresholdSecs = self.sleepIdleMinutes * 60
+    if self.isScreenLocked and isIdle then
+        self.consecutiveIdleSeconds = self.consecutiveIdleSeconds + self.idleCheckInterval
+    else
+        if self.consecutiveIdleSeconds > 0 then
+            local reason = not self.isScreenLocked and "screen unlocked" or "AI active"
+            print("[AntiSleep] " .. reason .. ", resetting idle counter")
+        end
+        self.consecutiveIdleSeconds = 0
+    end
+
+    -- Log for debugging (after idle counter update)
+    local logMsg = string.format("[AntiSleep] Check: screen=%s, Claude=%s, Cursor=%s, caffeinate=%s, idle=%ds/%ds",
+        self.isScreenLocked and "LOCKED" or "UNLOCKED",
+        self:formatBytes(claudeDelta),
+        self:formatBytes(cursorDelta),
+        self.isCaffeinateRunning and "ON" or "OFF",
+        self.consecutiveIdleSeconds,
+        sleepThresholdSecs)
+    print(logMsg)
+    local f = io.open("/tmp/antisleep.log", "a")
+    if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+
+    -- Trigger sleep if threshold reached
+    if self.isScreenLocked and isIdle and self.consecutiveIdleSeconds >= sleepThresholdSecs then
+        self:triggerSleep()
+    end
+
+    self:updateMenubar()
 end
 
 --- AntiSleep:start()
 --- Method
---- Start anti-sleep protection
+--- Start smart sleep monitoring
 function obj:start()
     if self.enabled then return self end
 
@@ -297,34 +487,33 @@ function obj:start()
     end
 
     self.startTime = os.time()
-    self.lastTotalBytes = 0
-    self.lastTrafficDelta = 0
-    self.idleCheckCount = 0
+    self.lastClaudeBytes = nil
+    self.lastCursorBytes = nil
+    self.consecutiveIdleSeconds = 0
     self.lastUserActivityTime = os.time()
+    self.sleepTriggeredByUs = false
+    self.sleepOccurredWhileLocked = false
+    self.lastSleepTime = nil
+    self.screenLockedTime = nil
+    self.preventionDuration = nil
+    self.isScreenLocked = false
 
-    -- Start mouse activity watcher (keyboard excluded because we simulate it)
+    -- Start user activity watcher (now includes keyboard since we don't simulate it)
     local self_ref = self
     self.userActivityWatcher = hs.eventtap.new({
         hs.eventtap.event.types.mouseMoved,
         hs.eventtap.event.types.leftMouseDown,
         hs.eventtap.event.types.rightMouseDown,
-        hs.eventtap.event.types.scrollWheel
+        hs.eventtap.event.types.scrollWheel,
+        hs.eventtap.event.types.keyDown
     }, function(event)
         self_ref.lastUserActivityTime = os.time()
         return false  -- don't consume the event
     end)
     self.userActivityWatcher:start()
 
-    -- Start caffeinate
-    self.caffeinateTask = hs.task.new("/usr/bin/caffeinate", nil, {"-dims"})
-    self.caffeinateTask:start()
-
-    -- Start keystroke timer
-    local self_ref = self
-    self.keystrokeTimer = hs.timer.doEvery(self.keystrokeInterval, function()
-        self_ref:simulateKeystroke()
-        self_ref:updateMenubar()
-    end)
+    -- Setup sleep/wake watcher
+    self:setupSleepWatcher()
 
     -- Start dim timer
     if self.enableDimming then
@@ -333,22 +522,19 @@ function obj:start()
         end)
     end
 
-    -- Start traffic check timer
-    if self.enableTrafficWatch then
-        self.trafficCheckTimer = hs.timer.doEvery(self.trafficCheckInterval, function()
-            self_ref:checkTraffic()
+    -- Start idle check timer
+    if self.enableAutoSleep then
+        self.idleCheckTimer = hs.timer.doEvery(self.idleCheckInterval, function()
+            self_ref:checkIdleAndSleep()
         end)
     end
 
     self.enabled = true
     self:updateMenubar()
 
-    print("[AntiSleep] Started")
+    print("[AntiSleep] Started - monitoring for idle")
     if self.showAlerts then
-        local msg = "☕ AntiSleep ON"
-        if self.enableTrafficWatch then
-            msg = msg .. string.format(" (grace: %dm)", self.trafficGracePeriod / 60)
-        end
+        local msg = string.format("👁 AntiSleep ON (sleep after %dm idle)", self.sleepIdleMinutes)
         hs.alert.show(msg, 2)
     end
 
@@ -357,36 +543,29 @@ end
 
 --- AntiSleep:stop()
 --- Method
---- Stop anti-sleep protection
+--- Stop smart sleep monitoring
 function obj:stop()
     if not self.enabled then return self end
 
-    -- Stop caffeinate (use killall as backup since terminate() may not work)
-    if self.caffeinateTask then
-        if self.caffeinateTask:isRunning() then
-            self.caffeinateTask:terminate()
-        end
-        self.caffeinateTask = nil
-    end
-    -- Force kill any remaining caffeinate started by us
-    hs.execute("killall caffeinate 2>/dev/null")
+    -- Stop caffeinate
+    self:stopCaffeinate()
 
-    -- Stop keystroke timer
-    if self.keystrokeTimer then
-        self.keystrokeTimer:stop()
-        self.keystrokeTimer = nil
+    -- Stop idle check timer
+    if self.idleCheckTimer then
+        self.idleCheckTimer:stop()
+        self.idleCheckTimer = nil
+    end
+
+    -- Stop sleep watcher
+    if self.sleepWatcher then
+        self.sleepWatcher:stop()
+        self.sleepWatcher = nil
     end
 
     -- Stop dim timer
     if self.dimTimer then
         self.dimTimer:stop()
         self.dimTimer = nil
-    end
-
-    -- Stop traffic check timer
-    if self.trafficCheckTimer then
-        self.trafficCheckTimer:stop()
-        self.trafficCheckTimer = nil
     end
 
     -- Stop user activity watcher
@@ -402,7 +581,7 @@ function obj:stop()
     self.startTime = nil
     self.lastTotalBytes = 0
     self.lastTrafficDelta = 0
-    self.idleCheckCount = 0
+    self.consecutiveIdleSeconds = 0
     self.enabled = false
     self:updateMenubar()
 

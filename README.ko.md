@@ -1,14 +1,17 @@
 # AntiSleep.spoon
 
-`caffeinate` + 키 입력 시뮬레이션으로 macOS 잠자기를 방지하는 Hammerspoon Spoon입니다. MDM 유휴 감지 우회에 유용합니다.
+[English Version](README.md)
+
+Claude Code 및 Cursor 세션을 위한 스마트 잠자기 관리 Hammerspoon Spoon입니다. 사용자 활동 + AI API 트래픽을 모니터링하고, 둘 다 유휴 상태일 때 잠자기를 트리거합니다.
 
 ## 기능
 
-- **Caffeinate 통합**: 시스템, 디스플레이, 유휴 잠자기 방지
-- **키 입력 시뮬레이션**: 주기적으로 Shift 키를 눌러 MDM 유휴 감지 우회
-- **화면 어둡게**: 시간이 지나면 점점 화면을 어둡게 (전력 절약, 자연스러움)
-- **Claude 트래픽 감지**: Claude Code가 유휴 상태면 자동 종료 (Anthropic API 트래픽 모니터링)
-- **메뉴바 아이콘**: 상태 표시 (☕ ON / 💤 OFF) 클릭으로 토글
+- **스마트 자동 잠자기**: 사용자와 AI 도구 모두 유휴 상태일 때 시스템 잠자기 트리거
+- **Wake 알림**: 자동 잠자기에서 복귀 시 알림 표시 (언제/얼마나)
+- **Claude 트래픽 감지**: Anthropic API 트래픽 모니터링 (`160.79.104.*`)
+- **Cursor 트래픽 감지**: Cursor API 트래픽 모니터링 (공식 도메인: `*.cursor.sh`, `*.cursor-cdn.com`)
+- **화면 어둡게**: 대기 중 점진적으로 화면을 어둡게 (전력 절약)
+- **메뉴바 아이콘**: 상태 표시 (👁 모니터링 / 💤 OFF) 클릭으로 토글
 
 ## 설치
 
@@ -31,6 +34,7 @@ cp -r AntiSleep.spoon ~/.hammerspoon/Spoons/
 ```lua
 hs.loadSpoon("AntiSleep")
 spoon.AntiSleep:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}})
+spoon.AntiSleep:start()
 ```
 
 Hammerspoon 설정 리로드 후 사용.
@@ -40,8 +44,12 @@ Hammerspoon 설정 리로드 후 사용.
 ```lua
 hs.loadSpoon("AntiSleep")
 
--- 키 입력 설정
-spoon.AntiSleep.keystrokeInterval = 60      -- 초 (기본값: 60)
+-- 잠자기 트리거 설정
+spoon.AntiSleep.sleepIdleMinutes = 2        -- X분 유휴 후 잠자기 (기본값: 2)
+spoon.AntiSleep.enableAutoSleep = true      -- 자동 잠자기 활성화 (기본값: true)
+spoon.AntiSleep.idleCheckInterval = 60      -- X초마다 체크 (기본값: 60)
+spoon.AntiSleep.minTrafficBytes = 100       -- AI 활성 판단 최소 바이트 (기본값: 100)
+spoon.AntiSleep.userIdleThreshold = 120     -- X초 후 사용자 유휴 (기본값: 120)
 
 -- 화면 어둡게 설정
 spoon.AntiSleep.enableDimming = true        -- 화면 어둡게 활성화 (기본값: true)
@@ -50,64 +58,67 @@ spoon.AntiSleep.dimInterval = 60            -- 60초마다 어둡게 (기본값:
 spoon.AntiSleep.dimStep = 5                 -- 5%씩 감소 (기본값: 5)
 spoon.AntiSleep.dimMinBrightness = 20       -- 최소 밝기 % (기본값: 20)
 
--- 트래픽 모니터링 설정
-spoon.AntiSleep.enableTrafficWatch = true   -- 유휴시 자동 종료 (기본값: true)
-spoon.AntiSleep.trafficGracePeriod = 1200   -- 유예 기간 20분 (기본값: 1200)
-spoon.AntiSleep.trafficCheckInterval = 60   -- 60초마다 체크 (기본값: 60)
-spoon.AntiSleep.idleThreshold = 2           -- N회 연속 유휴시 종료 (기본값: 2)
-spoon.AntiSleep.minTrafficBytes = 100       -- 활성 판단 최소 바이트 (기본값: 100)
-
 -- UI 설정
 spoon.AntiSleep.showMenubar = true          -- 메뉴바 아이콘 표시 (기본값: true)
 spoon.AntiSleep.showAlerts = true           -- ON/OFF 알림 표시 (기본값: true)
 
 spoon.AntiSleep:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}})
+spoon.AntiSleep:start()
 ```
 
 ## 작동 방식
 
-### 1. Caffeinate
-`/usr/bin/caffeinate -dims` 실행:
-- `-d` 디스플레이 잠자기 방지
-- `-i` 유휴 잠자기 방지
-- `-m` 디스크 잠자기 방지
-- `-s` 시스템 잠자기 방지
+### 1. 활동 모니터링
 
-### 2. 키 입력 시뮬레이션
-60초마다 Shift 키 누름/뗌을 시뮬레이션하여 MDM 유휴 감지 우회.
+사용자와 AI 도구 활동을 모두 모니터링:
+- **사용자 활동**: 마우스 움직임, 클릭, 스크롤, 키보드 입력
+- **Claude 활동**: Anthropic API 트래픽 (`160.79.104.*`)
+- **Cursor 활동**: Cursor API 트래픽 (공식 도메인 기반 특정 IP)
 
-### 3. 화면 어둡게
-5분 후부터 매분 5%씩 화면을 어둡게 하여 최소 20%까지. 종료시 원래 밝기 복원.
+#### Cursor IP 감지
 
-### 4. Claude 트래픽 감지
+[Cursor 공식 네트워크 설정](https://cursor.com/docs/enterprise/network-configuration) 기반으로 트래픽 감지:
+- `*.cursor.sh` → `100.51.*`, `100.52.*`
+- `*.cursor-cdn.com` → `104.26.8.*`, `104.26.9.*`, `172.67.71.*`
 
-`netstat -b`로 Anthropic API (`160.79.104.*`)로의 실제 바이트 전송량 모니터링:
+### 2. 스마트 잠자기 트리거
 
-```bash
-# Anthropic API 트래픽 바이트 확인
-netstat -b 2>/dev/null | grep '160.79.104'
+**중요**: 화면이 잠금 상태이거나 꺼져 있을 때만 잠자기가 트리거됩니다.
 
-# 출력 예시:
-tcp4  0  0  yourhost.60085  160.79.104.10.https  ESTABLISHED  13380  40408
-                                                              ↑      ↑
-                                                          recv_bytes send_bytes
+```
+매 60초마다:
+├─ 화면 잠금/꺼짐?
+├─ Claude 유휴? (API 트래픽 delta < 100 bytes)
+├─ Cursor 유휴? (API 트래픽 delta < 100 bytes)
+│
+├─ 화면 잠금 + 둘 다 유휴 → idle 카운터 증가
+│   └─ 2분 도달 → pmset sleepnow
+│
+└─ 화면 해제 또는 AI 활성 → 카운터 리셋
 ```
 
-| 상태 | 바이트 변화량 |
-|------|--------------|
-| **대화 중** (Claude 응답 중) | +수십 KB/초 |
-| **대기 중** (사용자 타이핑) | ~0 |
-| **완전 유휴** | 0 |
+### 3. 잠자기 방지 (caffeinate)
 
-**로직:**
-- 20분 유예 기간 (무조건 유지)
-- 유예 기간 후: 60초마다 체크
-- 바이트 변화량 >= 100 bytes → 계속 유지
-- 바이트 변화량 < 100 bytes 2회 연속 → 자동 종료
+Claude 또는 Cursor가 활성일 때:
+- `caffeinate -i`가 시작되어 유휴 시스템 잠자기 방지
+- 디스플레이 잠자기는 허용 (화면 잠금 가능)
+- 둘 다 유휴 상태가 되면 caffeinate 중지
 
-**디버그 로그:**
+### 4. Wake 알림
+
+자동 잠자기에서 복귀 시:
+- 시스템 알림으로 잠자기 시간과 지속 시간 표시
+- 화면 알림: "Woke from auto-sleep (X min)"
+- `/tmp/antisleep.log`에 기록
+
+### 5. 화면 어둡게
+
+5분 후부터 매분 5%씩 화면을 어둡게 하여 최소 20%까지. 활동 감지 시 원래 밝기 복원.
+
+## 디버그 로그
+
 ```bash
-# 터미널에서 실시간 로그 확인
+# 실시간 로그 확인
 tail -f /tmp/antisleep.log
 
 # 또는 Hammerspoon Console: 메뉴바 아이콘 → Console
@@ -115,17 +126,19 @@ tail -f /tmp/antisleep.log
 
 로그 출력 예시:
 ```
-21:30:00 [AntiSleep] Traffic check: total=12345, delta=500, idle=0/2
-21:31:00 [AntiSleep] Traffic check: total=12345, delta=0, idle=1/2
-21:32:00 [AntiSleep] No traffic detected, stopping
+07:41:36 [AntiSleep] Check: screen=UNLOCKED, Claude=525.2 KB, Cursor=1.2 MB, caffeinate=ON, idle=0s/120s
+07:42:36 [AntiSleep] Check: screen=UNLOCKED, Claude=0 B, Cursor=0 B, caffeinate=OFF, idle=0s/120s
+07:43:00 [AntiSleep] Event: screensDidLock
+07:45:00 [AntiSleep] Auto-sleep triggered (ran for 45 min)
+08:30:00 [AntiSleep] Woke from auto-sleep (duration: 45 min)
 ```
 
 ## API
 
 | 메서드 | 설명 |
 |--------|------|
-| `:start()` | 잠자기 방지 시작 |
-| `:stop()` | 잠자기 방지 중지 |
+| `:start()` | 스마트 잠자기 모니터링 시작 |
+| `:stop()` | 모니터링 중지 |
 | `:toggle()` | ON/OFF 토글 |
 | `:isRunning()` | 활성 상태면 `true` 반환 |
 | `:bindHotkeys(mapping)` | 단축키 바인딩 |
@@ -133,14 +146,14 @@ tail -f /tmp/antisleep.log
 ## 작동 확인
 
 ```bash
-# caffeinate 실행 중인지 확인
-pgrep caffeinate
-
-# 잠자기 방지 assertion 확인
-pmset -g assertions | grep -E "PreventUserIdleSystemSleep|PreventUserIdleDisplaySleep"
-
-# Anthropic API 트래픽 확인 (수동)
+# Claude (Anthropic) API 트래픽 확인
 netstat -b 2>/dev/null | grep '160.79.104' | awk '{sum += $(NF-1) + $NF} END {print sum}'
+
+# Cursor API 트래픽 확인
+netstat -b 2>/dev/null | grep -E '100.51|100.52|104.26.8|104.26.9' | awk '{sum += $(NF-1) + $NF} END {print sum}'
+
+# 잠자기 로그 확인
+pmset -g log | grep -i "sleep" | tail -5
 ```
 
 ## 라이선스
