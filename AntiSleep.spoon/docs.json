@@ -1,0 +1,57 @@
+[
+  {
+    "name": "AntiSleep",
+    "type": "Module",
+    "desc": "Prevents macOS from sleeping using caffeinate + keystroke simulation. Useful for bypassing MDM idle detection.",
+    "items": [
+      {
+        "name": "keystrokeInterval",
+        "type": "Variable",
+        "def": "AntiSleep.keystrokeInterval",
+        "desc": "Seconds between keystroke simulations. Default: 60"
+      },
+      {
+        "name": "showMenubar",
+        "type": "Variable",
+        "def": "AntiSleep.showMenubar",
+        "desc": "Show menubar icon. Default: true"
+      },
+      {
+        "name": "showAlerts",
+        "type": "Variable",
+        "def": "AntiSleep.showAlerts",
+        "desc": "Show on/off alerts. Default: true"
+      },
+      {
+        "name": "start",
+        "type": "Method",
+        "def": "AntiSleep:start()",
+        "desc": "Start anti-sleep protection"
+      },
+      {
+        "name": "stop",
+        "type": "Method",
+        "def": "AntiSleep:stop()",
+        "desc": "Stop anti-sleep protection"
+      },
+      {
+        "name": "toggle",
+        "type": "Method",
+        "def": "AntiSleep:toggle()",
+        "desc": "Toggle anti-sleep on/off"
+      },
+      {
+        "name": "isRunning",
+        "type": "Method",
+        "def": "AntiSleep:isRunning()",
+        "desc": "Returns true if anti-sleep is currently active"
+      },
+      {
+        "name": "bindHotkeys",
+        "type": "Method",
+        "def": "AntiSleep:bindHotkeys(mapping)",
+        "desc": "Bind hotkeys. mapping = {toggle = {{modifiers}, key}}"
+      }
+    ]
+  }
+]

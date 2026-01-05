@@ -1,0 +1,19 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+*.swp
+*.swo
+*~
+.idea/
+
+# Lua
+*.luac
+
+# Build artifacts
+build/
+dist/
+
+# Dependencies
+*.o
+*.so
