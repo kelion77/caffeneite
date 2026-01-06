@@ -37,6 +37,7 @@ obj.lastSleepTime = nil
 obj.sleepOccurredWhileLocked = false  -- track if sleep happened while screen locked
 obj.screenLockedTime = nil            -- when screen was locked (for prevention time calc)
 obj.preventionDuration = nil          -- how long sleep was prevented (lock → sleep)
+obj.sleepTriggerPending = false       -- prevent repeated pmset sleepnow calls
 obj.isScreenLocked = false        -- track if screen is locked
 obj.caffeinateTask = nil          -- caffeinate process for sleep prevention
 obj.isCaffeinateRunning = false   -- track caffeinate state
@@ -56,7 +57,7 @@ obj.dimMinBrightness = 20       -- minimum brightness (%)
 obj.sleepIdleMinutes = 2        -- trigger sleep after X minutes of combined idle
 obj.enableAutoSleep = true      -- enable automatic sleep trigger
 obj.idleCheckInterval = 60      -- check idle status every 60 seconds
-obj.minTrafficBytes = 100       -- minimum bytes delta to consider Claude "active"
+obj.minTrafficBytes = 1000      -- minimum bytes delta to consider AI "active" (1KB, ignore keep-alive)
 obj.userIdleThreshold = 120     -- user idle seconds to consider user "inactive" (2 min)
 
 -- API IP patterns
@@ -249,8 +250,9 @@ end
 function obj:startCaffeinate()
     if self.isCaffeinateRunning then return end
 
-    -- Use -i only: prevent idle system sleep, but allow display sleep (Lock works)
-    self.caffeinateTask = hs.task.new("/usr/bin/caffeinate", nil, {"-i"})
+    -- -is: prevent idle sleep AND system sleep (including lid close)
+    -- Display sleep still allowed (screen lock works)
+    self.caffeinateTask = hs.task.new("/usr/bin/caffeinate", nil, {"-is"})
     self.caffeinateTask:start()
     self.isCaffeinateRunning = true
 
@@ -400,6 +402,7 @@ function obj:onSystemWake()
     -- Reset flags
     self.sleepTriggeredByUs = false
     self.sleepOccurredWhileLocked = false
+    self.sleepTriggerPending = false
     self.lastSleepTime = nil
     self.preventionDuration = nil
     self.consecutiveIdleSeconds = 0
@@ -436,14 +439,7 @@ function obj:checkIdleAndSleep()
     local cursorActive = cursorDelta >= self.minTrafficBytes
     local isIdle = not claudeActive and not cursorActive
 
-    -- Manage caffeinate based on activity
-    if isIdle then
-        self:stopCaffeinate()
-    else
-        self:startCaffeinate()
-    end
-
-    -- Update idle counter first, then log
+    -- Update idle counter
     local sleepThresholdSecs = self.sleepIdleMinutes * 60
     if self.isScreenLocked and isIdle then
         self.consecutiveIdleSeconds = self.consecutiveIdleSeconds + self.idleCheckInterval
@@ -453,6 +449,25 @@ function obj:checkIdleAndSleep()
             print("[AntiSleep] " .. reason .. ", resetting idle counter")
         end
         self.consecutiveIdleSeconds = 0
+        self.sleepTriggerPending = false  -- reset so sleep can be triggered again
+    end
+
+    -- Manage caffeinate: keep ON while screen locked UNTIL idle threshold reached
+    -- This prevents macOS from sleeping immediately when traffic temporarily drops
+    if not self.isScreenLocked then
+        -- Screen unlocked: caffeinate based on activity only
+        if isIdle then
+            self:stopCaffeinate()
+        else
+            self:startCaffeinate()
+        end
+    else
+        -- Screen locked: keep caffeinate ON until we're ready to trigger sleep
+        if self.consecutiveIdleSeconds >= sleepThresholdSecs then
+            self:stopCaffeinate()  -- allow sleep now
+        else
+            self:startCaffeinate()  -- keep system awake during grace period
+        end
     end
 
     -- Log for debugging (after idle counter update)
@@ -467,9 +482,12 @@ function obj:checkIdleAndSleep()
     local f = io.open("/tmp/antisleep.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
-    -- Trigger sleep if threshold reached
+    -- Trigger sleep if threshold reached (only once per cycle)
     if self.isScreenLocked and isIdle and self.consecutiveIdleSeconds >= sleepThresholdSecs then
-        self:triggerSleep()
+        if not self.sleepTriggerPending then
+            self.sleepTriggerPending = true
+            self:triggerSleep()
+        end
     end
 
     self:updateMenubar()
@@ -493,24 +511,16 @@ function obj:start()
     self.lastUserActivityTime = os.time()
     self.sleepTriggeredByUs = false
     self.sleepOccurredWhileLocked = false
+    self.sleepTriggerPending = false
     self.lastSleepTime = nil
     self.screenLockedTime = nil
     self.preventionDuration = nil
     self.isScreenLocked = false
 
-    -- Start user activity watcher (now includes keyboard since we don't simulate it)
+    -- NOTE: User activity watcher (eventtap) removed for performance
+    -- It was causing typing lag by intercepting every keyboard/mouse event
+    -- Activity detection is now done purely via API traffic monitoring
     local self_ref = self
-    self.userActivityWatcher = hs.eventtap.new({
-        hs.eventtap.event.types.mouseMoved,
-        hs.eventtap.event.types.leftMouseDown,
-        hs.eventtap.event.types.rightMouseDown,
-        hs.eventtap.event.types.scrollWheel,
-        hs.eventtap.event.types.keyDown
-    }, function(event)
-        self_ref.lastUserActivityTime = os.time()
-        return false  -- don't consume the event
-    end)
-    self.userActivityWatcher:start()
 
     -- Setup sleep/wake watcher
     self:setupSleepWatcher()
