@@ -38,6 +38,7 @@ obj.sleepOccurredWhileLocked = false  -- track if sleep happened while screen lo
 obj.screenLockedTime = nil            -- when screen was locked (for prevention time calc)
 obj.preventionDuration = nil          -- how long sleep was prevented (lock → sleep)
 obj.sleepTriggerPending = false       -- prevent repeated pmset sleepnow calls
+obj.sleepTriggeredTime = nil          -- when sleep was triggered (for grace period)
 obj.isScreenLocked = false        -- track if screen is locked
 obj.caffeinateTask = nil          -- caffeinate process for sleep prevention
 obj.isCaffeinateRunning = false   -- track caffeinate state
@@ -59,6 +60,7 @@ obj.enableAutoSleep = true      -- enable automatic sleep trigger
 obj.idleCheckInterval = 60      -- check idle status every 60 seconds
 obj.minTrafficBytes = 1000      -- minimum bytes delta to consider AI "active" (1KB, ignore keep-alive)
 obj.userIdleThreshold = 120     -- user idle seconds to consider user "inactive" (2 min)
+obj.sleepGracePeriod = 180      -- don't restart caffeinate for X sec after sleep trigger (3 min)
 
 -- API IP patterns
 obj.claudeIpPatterns = {
@@ -291,6 +293,7 @@ function obj:triggerSleep()
     -- Record that WE triggered this sleep
     self.sleepTriggeredByUs = true
     self.lastSleepTime = os.time()
+    self.sleepTriggeredTime = os.time()  -- for grace period tracking
 
     local sleepTime = os.date("%Y-%m-%d %H:%M:%S")
     local runDuration = math.floor((os.time() - self.startTime) / 60)
@@ -403,6 +406,7 @@ function obj:onSystemWake()
     self.sleepTriggeredByUs = false
     self.sleepOccurredWhileLocked = false
     self.sleepTriggerPending = false
+    self.sleepTriggeredTime = nil  -- reset grace period
     self.lastSleepTime = nil
     self.preventionDuration = nil
     self.consecutiveIdleSeconds = 0
@@ -439,22 +443,42 @@ function obj:checkIdleAndSleep()
     local cursorActive = cursorDelta >= self.minTrafficBytes
     local isIdle = not claudeActive and not cursorActive
 
+    -- Check if we're in grace period after triggering sleep
+    local inGracePeriod = false
+    if self.sleepTriggeredTime then
+        local elapsed = os.time() - self.sleepTriggeredTime
+        if elapsed < self.sleepGracePeriod then
+            inGracePeriod = true
+        else
+            -- Grace period expired, reset
+            self.sleepTriggeredTime = nil
+            self.sleepTriggerPending = false
+        end
+    end
+
     -- Update idle counter
     local sleepThresholdSecs = self.sleepIdleMinutes * 60
     if self.isScreenLocked and isIdle then
         self.consecutiveIdleSeconds = self.consecutiveIdleSeconds + self.idleCheckInterval
     else
-        if self.consecutiveIdleSeconds > 0 then
-            local reason = not self.isScreenLocked and "screen unlocked" or "AI active"
-            print("[AntiSleep] " .. reason .. ", resetting idle counter")
+        if not inGracePeriod then
+            -- Only reset if NOT in grace period
+            if self.consecutiveIdleSeconds > 0 then
+                local reason = not self.isScreenLocked and "screen unlocked" or "AI active"
+                print("[AntiSleep] " .. reason .. ", resetting idle counter")
+            end
+            self.consecutiveIdleSeconds = 0
+            self.sleepTriggerPending = false
         end
-        self.consecutiveIdleSeconds = 0
-        self.sleepTriggerPending = false  -- reset so sleep can be triggered again
+        -- If in grace period, don't reset - let the sleep attempt complete
     end
 
     -- Manage caffeinate: keep ON while screen locked UNTIL idle threshold reached
-    -- This prevents macOS from sleeping immediately when traffic temporarily drops
-    if not self.isScreenLocked then
+    -- IMPORTANT: During grace period, don't restart caffeinate to allow sleep to happen
+    if inGracePeriod then
+        -- During grace period after sleep trigger: keep caffeinate OFF
+        self:stopCaffeinate()
+    elseif not self.isScreenLocked then
         -- Screen unlocked: caffeinate based on activity only
         if isIdle then
             self:stopCaffeinate()
@@ -471,13 +495,19 @@ function obj:checkIdleAndSleep()
     end
 
     -- Log for debugging (after idle counter update)
-    local logMsg = string.format("[AntiSleep] Check: screen=%s, Claude=%s, Cursor=%s, caffeinate=%s, idle=%ds/%ds",
+    local graceStatus = ""
+    if inGracePeriod then
+        local remaining = self.sleepGracePeriod - (os.time() - self.sleepTriggeredTime)
+        graceStatus = string.format(", GRACE=%ds", remaining)
+    end
+    local logMsg = string.format("[AntiSleep] Check: screen=%s, Claude=%s, Cursor=%s, caffeinate=%s, idle=%ds/%ds%s",
         self.isScreenLocked and "LOCKED" or "UNLOCKED",
         self:formatBytes(claudeDelta),
         self:formatBytes(cursorDelta),
         self.isCaffeinateRunning and "ON" or "OFF",
         self.consecutiveIdleSeconds,
-        sleepThresholdSecs)
+        sleepThresholdSecs,
+        graceStatus)
     print(logMsg)
     local f = io.open("/tmp/antisleep.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
@@ -512,6 +542,7 @@ function obj:start()
     self.sleepTriggeredByUs = false
     self.sleepOccurredWhileLocked = false
     self.sleepTriggerPending = false
+    self.sleepTriggeredTime = nil
     self.lastSleepTime = nil
     self.screenLockedTime = nil
     self.preventionDuration = nil
