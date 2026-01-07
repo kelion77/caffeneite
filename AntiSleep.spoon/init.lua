@@ -54,7 +54,7 @@ obj.dimStep = 5                 -- reduce brightness by 5% each step
 obj.dimMinBrightness = 20       -- minimum brightness (%)
 
 -- Sleep trigger configuration
-obj.sleepIdleMinutes = 2        -- trigger sleep after X minutes of combined idle
+obj.sleepIdleMinutes = 5        -- trigger sleep after X minutes of combined idle
 obj.enableAutoSleep = true      -- enable automatic sleep trigger
 obj.idleCheckInterval = 60      -- check idle status every 60 seconds
 obj.minTrafficBytes = 1000      -- minimum bytes delta to consider AI "active" (1KB, ignore keep-alive)
