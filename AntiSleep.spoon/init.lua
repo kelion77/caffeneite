@@ -54,7 +54,7 @@ obj.dimStep = 5                 -- reduce brightness by 5% each step
 obj.dimMinBrightness = 20       -- minimum brightness (%)
 
 -- Sleep trigger configuration
-obj.sleepIdleMinutes = 5        -- trigger sleep after X minutes of combined idle
+obj.sleepIdleMinutes = 2        -- trigger sleep after X minutes of combined idle
 obj.enableAutoSleep = true      -- enable automatic sleep trigger
 obj.idleCheckInterval = 60      -- check idle status every 60 seconds
 obj.minTrafficBytes = 1000      -- minimum bytes delta to consider AI "active" (1KB, ignore keep-alive)
@@ -65,15 +65,24 @@ obj.sleepGracePeriod = 180      -- don't restart caffeinate for X sec after slee
 obj.claudeIpPatterns = {
     "160.79.104",   -- Anthropic (Claude Code)
 }
--- Cursor IP patterns (from official domains: *.cursor.sh, *.cursor-cdn.com)
+-- Cursor IP patterns (from nslookup: *.cursor.sh, *.cursor-cdn.com)
 obj.cursorIpPatterns = {
+    -- api2.cursor.sh (api2direct.cursor.sh)
+    "100.49",       -- api2.cursor.sh
     "100.50",       -- api2.cursor.sh
     "100.51",       -- api2.cursor.sh
     "100.52",       -- api2.cursor.sh
-    "104.18",       -- cursor-cdn.com (Cloudflare)
+    "23.23",        -- api2.cursor.sh (AWS)
+    "52.7",         -- api2.cursor.sh (AWS)
+    "54.205",       -- api2.cursor.sh (AWS)
+    "54.209",       -- api2.cursor.sh (AWS)
+    "3.216",        -- api2.cursor.sh (AWS)
+    -- cursor-cdn.com (Cloudflare)
+    "104.18",       -- cursor-cdn.com
     "104.26.8",     -- cursor-cdn.com
     "104.26.9",     -- cursor-cdn.com
     "172.67.71",    -- cursor-cdn.com
+    -- cursor.sh
     "76.76.21",     -- cursor.sh (Vercel)
 }
 
