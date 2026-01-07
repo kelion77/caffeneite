@@ -29,7 +29,6 @@ obj.startTime = nil
 obj.lastClaudeBytes = nil         -- for Claude delta calculation
 obj.lastCursorBytes = nil         -- for Cursor delta calculation
 obj.consecutiveIdleSeconds = 0
-obj.lastUserActivityTime = nil
 obj.userActivityWatcher = nil
 obj.sleepWatcher = nil
 obj.sleepTriggeredByUs = false
@@ -66,7 +65,7 @@ obj.sleepGracePeriod = 180      -- don't restart caffeinate for X sec after slee
 obj.claudeIpPatterns = {
     "160.79.104",   -- Anthropic (Claude Code)
 }
--- Cursor IP patterns (from lsof -i | grep cursor)
+-- Cursor IP patterns (from official domains: *.cursor.sh, *.cursor-cdn.com)
 obj.cursorIpPatterns = {
     "100.50",       -- api2.cursor.sh
     "100.51",       -- api2.cursor.sh
@@ -76,8 +75,6 @@ obj.cursorIpPatterns = {
     "104.26.9",     -- cursor-cdn.com
     "172.67.71",    -- cursor-cdn.com
     "76.76.21",     -- cursor.sh (Vercel)
-    "54.84",        -- Cursor AWS backend
-    "52.1",         -- Cursor AWS backend
 }
 
 --- AntiSleep:init()
@@ -155,24 +152,22 @@ end
 
 --- AntiSleep:isUserActive()
 --- Method
---- Check if user is actively using the computer (based on mouse/keyboard activity)
+--- Check if user is actively using the computer (based on system idle time)
 function obj:isUserActive()
-    if not self.lastUserActivityTime then return false end
-    local idleTime = os.time() - self.lastUserActivityTime
+    local idleTime = hs.host.idleTime()  -- system idle time in seconds
     return idleTime < self.userIdleThreshold
 end
 
 --- AntiSleep:getUserIdleTime()
 --- Method
---- Get seconds since last mouse activity
+--- Get seconds since last user activity
 function obj:getUserIdleTime()
-    if not self.lastUserActivityTime then return 9999 end
-    return os.time() - self.lastUserActivityTime
+    return hs.host.idleTime()
 end
 
 --- AntiSleep:dimScreen()
 --- Method
---- Gradually dim the screen (only when both user and Claude are idle)
+--- Gradually dim the screen (only when user is idle)
 function obj:dimScreen()
     if not self.enabled or not self.enableDimming then return end
     if not self.startTime then return end
@@ -180,8 +175,8 @@ function obj:dimScreen()
     local elapsed = os.time() - self.startTime
     if elapsed < self.dimStartDelay then return end
 
-    -- If user is active OR there's Claude traffic, restore brightness
-    if self:isUserActive() or self.lastTrafficDelta >= self.minTrafficBytes then
+    -- If user is active, restore brightness
+    if self:isUserActive() then
         if self.originalBrightness and self.currentBrightness then
             hs.brightness.set(self.originalBrightness)
             self.currentBrightness = nil
@@ -189,7 +184,7 @@ function obj:dimScreen()
         return
     end
 
-    -- Both user and Claude idle, dim the screen
+    -- User is idle, dim the screen
     local currentBrightness = hs.brightness.get()
     if currentBrightness and currentBrightness > self.dimMinBrightness then
         local newBrightness = math.max(currentBrightness - self.dimStep, self.dimMinBrightness)
@@ -545,7 +540,6 @@ function obj:start()
     self.lastClaudeBytes = nil
     self.lastCursorBytes = nil
     self.consecutiveIdleSeconds = 0
-    self.lastUserActivityTime = os.time()
     self.sleepTriggeredByUs = false
     self.sleepOccurredWhileLocked = false
     self.sleepTriggerPending = false
@@ -616,19 +610,10 @@ function obj:stop()
         self.dimTimer = nil
     end
 
-    -- Stop user activity watcher
-    if self.userActivityWatcher then
-        self.userActivityWatcher:stop()
-        self.userActivityWatcher = nil
-    end
-    self.lastUserActivityTime = nil
-
     -- Restore brightness
     self:restoreBrightness()
 
     self.startTime = nil
-    self.lastTotalBytes = 0
-    self.lastTrafficDelta = 0
     self.consecutiveIdleSeconds = 0
     self.enabled = false
     self:updateMenubar()
