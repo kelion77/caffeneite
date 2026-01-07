@@ -345,6 +345,10 @@ function obj:setupSleepWatcher()
         elseif eventType == hs.caffeinate.watcher.screensDidSleep then
             -- Screen turned off (display sleep)
             self_ref.isScreenLocked = true
+            -- Set screenLockedTime if not already set (for lock delay calculation)
+            if not self_ref.screenLockedTime then
+                self_ref.screenLockedTime = os.time()
+            end
         elseif eventType == hs.caffeinate.watcher.screensDidWake then
             -- Screen turned on but might still be locked
             -- Don't change isScreenLocked here, wait for screensDidUnlock
