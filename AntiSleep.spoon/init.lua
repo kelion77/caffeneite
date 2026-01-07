@@ -61,21 +61,23 @@ obj.idleCheckInterval = 60      -- check idle status every 60 seconds
 obj.minTrafficBytes = 1000      -- minimum bytes delta to consider AI "active" (1KB, ignore keep-alive)
 obj.userIdleThreshold = 120     -- user idle seconds to consider user "inactive" (2 min)
 obj.sleepGracePeriod = 180      -- don't restart caffeinate for X sec after sleep trigger (3 min)
-obj.lockIdleDelay = 300         -- don't start idle countdown for X sec after screen lock (5 min)
 
 -- API IP patterns
 obj.claudeIpPatterns = {
     "160.79.104",   -- Anthropic (Claude Code)
 }
--- Cursor IP patterns (from official domains: *.cursor.sh, *.cursor-cdn.com)
--- These are specific ranges, not broad AWS/Cloudflare
+-- Cursor IP patterns (from lsof -i | grep cursor)
 obj.cursorIpPatterns = {
+    "100.50",       -- api2.cursor.sh
     "100.51",       -- api2.cursor.sh
     "100.52",       -- api2.cursor.sh
+    "104.18",       -- cursor-cdn.com (Cloudflare)
     "104.26.8",     -- cursor-cdn.com
     "104.26.9",     -- cursor-cdn.com
     "172.67.71",    -- cursor-cdn.com
     "76.76.21",     -- cursor.sh (Vercel)
+    "54.84",        -- Cursor AWS backend
+    "52.1",         -- Cursor AWS backend
 }
 
 --- AntiSleep:init()
@@ -461,23 +463,10 @@ function obj:checkIdleAndSleep()
         end
     end
 
-    -- Check if we're still in lock delay period (don't start idle countdown too soon after lock)
-    local inLockDelay = false
-    if self.isScreenLocked and self.screenLockedTime then
-        local timeSinceLock = os.time() - self.screenLockedTime
-        if timeSinceLock < self.lockIdleDelay then
-            inLockDelay = true
-        end
-    end
-
     -- Update idle counter
     local sleepThresholdSecs = self.sleepIdleMinutes * 60
-    if self.isScreenLocked and isIdle and not inLockDelay then
-        -- Only start counting after lock delay period
+    if self.isScreenLocked and isIdle then
         self.consecutiveIdleSeconds = self.consecutiveIdleSeconds + self.idleCheckInterval
-    elseif self.isScreenLocked and isIdle and inLockDelay then
-        -- In lock delay period, keep caffeinate ON but don't count
-        self.consecutiveIdleSeconds = 0
     else
         if not inGracePeriod then
             -- Only reset if NOT in grace period
@@ -503,11 +492,8 @@ function obj:checkIdleAndSleep()
         else
             self:startCaffeinate()
         end
-    elseif inLockDelay then
-        -- In lock delay period: keep caffeinate ON (user may return soon)
-        self:startCaffeinate()
     else
-        -- Screen locked, past lock delay: keep caffeinate ON until we're ready to trigger sleep
+        -- Screen locked: keep caffeinate ON until we're ready to trigger sleep
         if self.consecutiveIdleSeconds >= sleepThresholdSecs then
             self:stopCaffeinate()  -- allow sleep now
         else
@@ -520,9 +506,6 @@ function obj:checkIdleAndSleep()
     if inGracePeriod then
         local remaining = self.sleepGracePeriod - (os.time() - self.sleepTriggeredTime)
         extraStatus = string.format(", GRACE=%ds", remaining)
-    elseif inLockDelay then
-        local remaining = self.lockIdleDelay - (os.time() - self.screenLockedTime)
-        extraStatus = string.format(", LOCKDELAY=%ds", remaining)
     end
     local logMsg = string.format("[AntiSleep] Check: screen=%s, Claude=%s, Cursor=%s, caffeinate=%s, idle=%ds/%ds%s",
         self.isScreenLocked and "LOCKED" or "UNLOCKED",
