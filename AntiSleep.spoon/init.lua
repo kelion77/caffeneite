@@ -47,7 +47,7 @@ obj.showMenubar = true          -- show menubar icon
 obj.showAlerts = true           -- show on/off alerts
 
 -- Dimming configuration
-obj.enableDimming = true        -- enable gradual dimming
+obj.enableDimming = false       -- DISABLED - was dimming during active use
 obj.dimStartDelay = 300         -- start dimming after 5 minutes (seconds)
 obj.dimInterval = 60            -- dim every 60 seconds
 obj.dimStep = 5                 -- reduce brightness by 5% each step
@@ -175,11 +175,17 @@ function obj:dimScreen()
     local elapsed = os.time() - self.startTime
     if elapsed < self.dimStartDelay then return end
 
+    local idleTime = hs.host.idleTime()
+
     -- If user is active, restore brightness
-    if self:isUserActive() then
+    if idleTime < self.userIdleThreshold then
         if self.originalBrightness and self.currentBrightness then
             hs.brightness.set(self.originalBrightness)
             self.currentBrightness = nil
+            local logMsg = string.format("[AntiSleep] Dim: restored (userIdle=%.0fs < %ds)", idleTime, self.userIdleThreshold)
+            print(logMsg)
+            local f = io.open("/tmp/antisleep.log", "a")
+            if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
         end
         return
     end
@@ -190,6 +196,10 @@ function obj:dimScreen()
         local newBrightness = math.max(currentBrightness - self.dimStep, self.dimMinBrightness)
         hs.brightness.set(newBrightness)
         self.currentBrightness = newBrightness
+        local logMsg = string.format("[AntiSleep] Dim: %d%% -> %d%% (userIdle=%.0fs)", currentBrightness, newBrightness, idleTime)
+        print(logMsg)
+        local f = io.open("/tmp/antisleep.log", "a")
+        if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
     end
 end
 
