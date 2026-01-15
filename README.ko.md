@@ -18,7 +18,7 @@ Claude Code 및 Cursor 세션을 위한 스마트 잠자기 관리 Hammerspoon S
 ### 방법 1: Spoons 폴더에 직접 클론
 
 ```bash
-git clone https://github.com/yourusername/AntiSleep.spoon.git ~/.hammerspoon/Spoons/AntiSleep.spoon
+git clone https://github.com/kelion77/caffeneite.git ~/.hammerspoon/Spoons/AntiSleep.spoon
 ```
 
 ### 방법 2: 다운로드 후 복사
@@ -92,10 +92,16 @@ spoon.AntiSleep:start()
 ├─ Cursor 유휴? (API 트래픽 delta < 100 bytes)
 │
 ├─ 화면 잠금 + 둘 다 유휴 → idle 카운터 증가
-│   └─ 2분 도달 → pmset sleepnow
+│   └─ 2분 도달 → 모니터링 일시정지 + pmset sleepnow
+│                  (타이머 중지, sleepWatcher는 유지)
 │
 └─ 화면 해제 또는 AI 활성 → 카운터 리셋
 ```
+
+**잠자기 후 자동 재시작**:
+- 잠자기 트리거 시 모니터링은 일시정지되지만 sleepWatcher는 활성 유지
+- wake 시 (`systemDidWake` 이벤트), 모니터링이 자동으로 재시작
+- wake 직후 잠자기가 반복되는 것을 방지
 
 ### 3. 잠자기 방지 (caffeinate)
 
@@ -138,7 +144,8 @@ tail -f /tmp/antisleep.log
 | 메서드 | 설명 |
 |--------|------|
 | `:start()` | 스마트 잠자기 모니터링 시작 |
-| `:stop()` | 모니터링 중지 |
+| `:stop()` | 모니터링 완전히 중지 (sleepWatcher 포함) |
+| `:pause()` | 모니터링 일시정지 (sleepWatcher는 유지하여 자동 재시작 가능) |
 | `:toggle()` | ON/OFF 토글 |
 | `:isRunning()` | 활성 상태면 `true` 반환 |
 | `:bindHotkeys(mapping)` | 단축키 바인딩 |
