@@ -57,7 +57,7 @@ obj.dimMinBrightness = 20       -- minimum brightness (%)
 obj.sleepIdleMinutes = 2        -- trigger sleep after X minutes of combined idle
 obj.enableAutoSleep = true      -- enable automatic sleep trigger
 obj.idleCheckInterval = 60      -- check idle status every 60 seconds
-obj.minTrafficBytes = 1000      -- minimum bytes delta to consider AI "active" (1KB, ignore keep-alive)
+obj.minTrafficBytes = 50000     -- minimum bytes delta to consider AI "active" (50KB, filters out keep-alive/teardown traffic)
 obj.userIdleThreshold = 120     -- user idle seconds to consider user "inactive" (2 min)
 obj.sleepGracePeriod = 180      -- don't restart caffeinate for X sec after sleep trigger (3 min)
 
@@ -65,26 +65,60 @@ obj.sleepGracePeriod = 180      -- don't restart caffeinate for X sec after slee
 obj.claudeIpPatterns = {
     "160.79.104",   -- Anthropic (Claude Code)
 }
--- Cursor IP patterns (from nslookup: *.cursor.sh, *.cursor-cdn.com)
+-- Cursor IP patterns (observed from actual connections)
+-- 104.18 = Cloudflare (cursor-cdn.com, extensions)
+-- 75.2.76 = AWS Global Accelerator
+-- 52.86, 35.71, 52.1, 3.218 = AWS (api servers)
 obj.cursorIpPatterns = {
-    -- api2.cursor.sh (api2direct.cursor.sh)
-    "100.49",       -- api2.cursor.sh
-    "100.50",       -- api2.cursor.sh
-    "100.51",       -- api2.cursor.sh
-    "100.52",       -- api2.cursor.sh
-    "23.23",        -- api2.cursor.sh (AWS)
-    "52.7",         -- api2.cursor.sh (AWS)
-    "54.205",       -- api2.cursor.sh (AWS)
-    "54.209",       -- api2.cursor.sh (AWS)
-    "3.216",        -- api2.cursor.sh (AWS)
-    -- cursor-cdn.com (Cloudflare)
-    "104.18",       -- cursor-cdn.com
-    "104.26.8",     -- cursor-cdn.com
-    "104.26.9",     -- cursor-cdn.com
-    "172.67.71",    -- cursor-cdn.com
-    -- cursor.sh
-    "76.76.21",     -- cursor.sh (Vercel)
+    "104.18",       -- Cloudflare CDN (stable)
+    "75.2.76",      -- AWS Global Accelerator (stable)
 }
+-- DNS domains for dynamic IP refresh (adds to static patterns)
+obj.cursorDomains = {
+    "api2.cursor.sh",
+    "api3.cursor.sh",
+}
+obj.cursorDnsRefreshInterval = 1800  -- refresh DNS every 30 minutes
+obj.cursorDnsTimer = nil
+
+--- AntiSleep:refreshCursorIPs()
+--- Method
+--- Add DNS-resolved IPs to static Cursor patterns
+function obj:refreshCursorIPs()
+    -- Start with static patterns
+    local staticPatterns = {"104.18", "75.2.76"}
+    local patterns = {}
+    local seen = {}
+
+    -- Add static patterns first
+    for _, p in ipairs(staticPatterns) do
+        seen[p] = true
+        table.insert(patterns, p)
+    end
+
+    -- Add DNS-resolved patterns (only 100.x which are AWS Global Accelerator)
+    for _, domain in ipairs(self.cursorDomains) do
+        local cmd = string.format("dig +short %s A 2>/dev/null", domain)
+        local output, status = hs.execute(cmd)
+        if status and output then
+            for ip in output:gmatch("(%d+%.%d+%.%d+%.%d+)") do
+                if ip:match("^100%.") then
+                    local pattern = ip:match("^(%d+%.%d+)")  -- e.g., "100.52"
+                    if pattern and not seen[pattern] then
+                        seen[pattern] = true
+                        table.insert(patterns, pattern)
+                    end
+                end
+            end
+        end
+    end
+
+    self.cursorIpPatterns = patterns
+    local logMsg = string.format("[AntiSleep] Cursor IPs: %s", table.concat(patterns, ", "))
+    print(logMsg)
+    local f = io.open("/tmp/antisleep.log", "a")
+    if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+end
 
 --- AntiSleep:init()
 --- Method
@@ -233,7 +267,7 @@ function obj:getTrafficBytesSeparate()
     -- Get Claude traffic (bytes via netstat - Anthropic IP is unique)
     local claudePattern = table.concat(self.claudeIpPatterns, "|")
     local claudeCmd = string.format(
-        "netstat -b 2>/dev/null | grep -E '%s' | awk '{sum += $(NF-1) + $NF} END {print sum+0}'",
+        "netstat -bn 2>/dev/null | grep -E '%s' | awk '{sum += $(NF-1) + $NF} END {print sum+0}'",
         claudePattern
     )
     local output, status = hs.execute(claudeCmd)
@@ -241,15 +275,17 @@ function obj:getTrafficBytesSeparate()
         claudeBytes = tonumber(output:match("%d+")) or 0
     end
 
-    -- Get Cursor traffic (bytes via netstat - using specific Cursor domain IPs)
-    local cursorPattern = table.concat(self.cursorIpPatterns, "|")
-    local cursorCmd = string.format(
-        "netstat -b 2>/dev/null | grep -E '%s' | awk '{sum += $(NF-1) + $NF} END {print sum+0}'",
-        cursorPattern
-    )
-    output, status = hs.execute(cursorCmd)
-    if status and output then
-        cursorBytes = tonumber(output:match("%d+")) or 0
+    -- Get Cursor traffic (bytes via netstat - using Cursor IP patterns)
+    if #self.cursorIpPatterns > 0 then
+        local cursorPattern = table.concat(self.cursorIpPatterns, "|")
+        local cursorCmd = string.format(
+            "netstat -bn 2>/dev/null | grep -E '%s' | awk '{sum += $(NF-1) + $NF} END {print sum+0}'",
+            cursorPattern
+        )
+        output, status = hs.execute(cursorCmd)
+        if status and output then
+            cursorBytes = tonumber(output:match("%d+")) or 0
+        end
     end
 
     return claudeBytes, cursorBytes
@@ -268,6 +304,10 @@ end
 --- Start caffeinate to prevent idle system sleep (but allow display sleep for Lock)
 function obj:startCaffeinate()
     if self.isCaffeinateRunning then return end
+
+    -- SAFETY: Kill any orphan caffeinate before starting a new one
+    -- This prevents multiple caffeinate processes from accumulating
+    hs.execute("killall caffeinate 2>/dev/null")
 
     -- -is: prevent idle sleep AND system sleep (including lid close)
     -- Display sleep still allowed (screen lock works)
@@ -307,22 +347,35 @@ end
 --- Method
 --- Trigger system sleep via pmset sleepnow
 function obj:triggerSleep()
-    -- Record that WE triggered this sleep
-    self.sleepTriggeredByUs = true
-    self.lastSleepTime = os.time()
-    self.sleepTriggeredTime = os.time()  -- for grace period tracking
+    -- Get last traffic values for logging
+    local claudeStr = self:formatBytes(self._lastClaudeDelta or 0)
+    local cursorStr = self:formatBytes(self._lastCursorDelta or 0)
+    local thresholdStr = self:formatBytes(self.minTrafficBytes)
 
-    local sleepTime = os.date("%Y-%m-%d %H:%M:%S")
-    local runDuration = math.floor((os.time() - self.startTime) / 60)
-
-    -- Log the event
-    local logMsg = string.format("[AntiSleep] Auto-sleep triggered at %s (ran for %d min)", sleepTime, runDuration)
+    -- Log the event with reason
+    local logMsg = string.format("[AntiSleep] Auto-sleep: Claude=%s, Cursor=%s (threshold=%s) → pausing and sleeping",
+        claudeStr, cursorStr, thresholdStr)
     print(logMsg)
     local f = io.open("/tmp/antisleep.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
-    -- Trigger sleep via pmset
-    hs.execute("pmset sleepnow")
+    -- Record that WE triggered this sleep
+    self.sleepTriggeredByUs = true
+    self.lastSleepTime = os.time()
+    self.screenLockedTime = self.screenLockedTime or os.time()
+    self.preventionDuration = os.time() - self.screenLockedTime
+
+    -- Pause AntiSleep (timers and caffeinate stop, but sleepWatcher stays active)
+    self:pause()
+
+    -- Small delay to ensure caffeinate is fully dead, then trigger sleep
+    hs.timer.doAfter(0.5, function()
+        local output = hs.execute("pmset sleepnow 2>&1")
+        local logMsg2 = "[AntiSleep] pmset sleepnow executed"
+        print(logMsg2)
+        local f2 = io.open("/tmp/antisleep.log", "a")
+        if f2 then f2:write(os.date("%H:%M:%S ") .. logMsg2 .. "\n"); f2:close() end
+    end)
 end
 
 --- AntiSleep:setupSleepWatcher()
@@ -386,6 +439,19 @@ function obj:setupSleepWatcher()
     print("[AntiSleep] Sleep watcher started")
 end
 
+--- AntiSleep:formatDuration(seconds)
+--- Method
+--- Format duration: show seconds if < 1 min, otherwise minutes
+function obj:formatDuration(seconds)
+    if not seconds or seconds < 0 then
+        return "0 sec"
+    elseif seconds < 60 then
+        return string.format("%d sec", seconds)
+    else
+        return string.format("%d min", math.floor(seconds / 60))
+    end
+end
+
 --- AntiSleep:onSystemWake()
 --- Method
 --- Handle system wake event - show notification if sleep occurred while screen was locked
@@ -393,15 +459,23 @@ function obj:onSystemWake()
     -- Show notification if sleep occurred while screen was locked
     if self.sleepOccurredWhileLocked and self.lastSleepTime then
         local sleepDuration = os.time() - self.lastSleepTime
-        local sleepMins = math.floor(sleepDuration / 60)
-        local preventionMins = math.floor((self.preventionDuration or 0) / 60)
+        local preventionDuration = self.preventionDuration or 0
 
-        -- Determine reason
-        local reason = self.sleepTriggeredByUs and "Claude/Cursor idle" or "System idle"
+        -- Format durations (show seconds if < 1 min)
+        local sleepStr = self:formatDuration(sleepDuration)
+        local preventionStr = self:formatDuration(preventionDuration)
+
+        -- Determine reason with more detail
+        local reason
+        if self.sleepTriggeredByUs then
+            reason = string.format("Claude/Cursor idle for %d min", self.sleepIdleMinutes)
+        else
+            reason = "System idle timeout"
+        end
 
         -- Log wake event
-        local logMsg = string.format("[AntiSleep] Woke from sleep (prevented: %d min, slept: %d min, reason: %s)",
-            preventionMins, sleepMins, reason)
+        local logMsg = string.format("[AntiSleep] Woke from sleep (prevented: %s, slept: %s, reason: %s)",
+            preventionStr, sleepStr, reason)
         print(logMsg)
         local f = io.open("/tmp/antisleep.log", "a")
         if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
@@ -410,16 +484,16 @@ function obj:onSystemWake()
         hs.notify.new({
             title = "AntiSleep: Sleep Occurred",
             informativeText = string.format(
-                "Prevented: %d min\nSlept: %d min\nReason: %s",
-                preventionMins,
-                sleepMins,
+                "Prevented: %s\nSlept: %s\nReason: %s",
+                preventionStr,
+                sleepStr,
                 reason
             ),
             withdrawAfter = 0  -- Keep in Notification Center
         }):send()
 
         if self.showAlerts then
-            hs.alert.show(string.format("😴 Prevented %d min, slept %d min", preventionMins, sleepMins), 5)
+            hs.alert.show(string.format("😴 Prevented %s, slept %s", preventionStr, sleepStr), 5)
         end
     end
 
@@ -431,6 +505,16 @@ function obj:onSystemWake()
     self.lastSleepTime = nil
     self.preventionDuration = nil
     self.consecutiveIdleSeconds = 0
+
+    -- Auto-restart if sleepWatcher is active but monitoring is paused
+    if self.sleepWatcher and not self.enabled then
+        local logMsg = "[AntiSleep] Auto-restarting after wake"
+        print(logMsg)
+        local f = io.open("/tmp/antisleep.log", "a")
+        if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+
+        self:start()
+    end
 end
 
 --- AntiSleep:checkIdleAndSleep()
@@ -439,6 +523,23 @@ end
 function obj:checkIdleAndSleep()
     if not self.enabled or not self.enableAutoSleep then return end
     if not self.startTime then return end
+
+    -- SAFETY: If system auto-woke without systemDidWake event, reset stale state
+    -- This happens when network activity wakes the system but Hammerspoon misses the event
+    if self.lastSleepTime and not self.sleepOccurredWhileLocked then
+        local timeSinceSleep = os.time() - self.lastSleepTime
+        if timeSinceSleep > 300 then  -- 5 minutes - definitely stale
+            local logMsg = string.format("[AntiSleep] WARN: Detected stale sleep state (%d sec old), resetting", timeSinceSleep)
+            print(logMsg)
+            local f = io.open("/tmp/antisleep.log", "a")
+            if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+
+            self.lastSleepTime = nil
+            self.sleepTriggeredByUs = false
+            self.sleepTriggerPending = false
+            self.sleepTriggeredTime = nil
+        end
+    end
 
     -- Get traffic bytes for Claude and Cursor
     local claudeBytes, cursorBytes = self:getTrafficBytesSeparate()
@@ -463,6 +564,20 @@ function obj:checkIdleAndSleep()
     local claudeActive = claudeDelta >= self.minTrafficBytes
     local cursorActive = cursorDelta >= self.minTrafficBytes
     local isIdle = not claudeActive and not cursorActive
+
+    -- DEBUG: Log comparison values
+    if self.isScreenLocked then
+        local df = io.open("/tmp/antisleep.log", "a")
+        if df then
+            df:write(os.date("%H:%M:%S ") .. string.format("[DEBUG] cursorDelta=%d, threshold=%d, cursorActive=%s, isIdle=%s\n",
+                cursorDelta, self.minTrafficBytes, tostring(cursorActive), tostring(isIdle)))
+            df:close()
+        end
+    end
+
+    -- Store for sleep trigger logging
+    self._lastClaudeDelta = claudeDelta
+    self._lastCursorDelta = cursorDelta
 
     -- Check if we're in grace period after triggering sleep
     local inGracePeriod = false
@@ -586,9 +701,21 @@ function obj:start()
     -- Start idle check timer
     if self.enableAutoSleep then
         self.idleCheckTimer = hs.timer.doEvery(self.idleCheckInterval, function()
-            self_ref:checkIdleAndSleep()
+            local ok, err = pcall(function()
+                self_ref:checkIdleAndSleep()
+            end)
+            if not ok then
+                local ef = io.open("/tmp/antisleep.log", "a")
+                if ef then ef:write(os.date("%H:%M:%S ") .. "[AntiSleep] ERROR: " .. tostring(err) .. "\n"); ef:close() end
+            end
         end)
     end
+
+    -- Start DNS refresh timer for Cursor IPs
+    self:refreshCursorIPs()  -- refresh now
+    self.cursorDnsTimer = hs.timer.doEvery(self.cursorDnsRefreshInterval, function()
+        self_ref:refreshCursorIPs()
+    end)
 
     self.enabled = true
     self:updateMenubar()
@@ -599,6 +726,48 @@ function obj:start()
         hs.alert.show(msg, 2)
     end
 
+    return self
+end
+
+--- AntiSleep:pause()
+--- Method
+--- Pause monitoring but keep sleep watcher for auto-restart
+function obj:pause()
+    if not self.enabled then return self end
+
+    -- Stop caffeinate
+    self:stopCaffeinate()
+
+    -- Stop idle check timer
+    if self.idleCheckTimer then
+        self.idleCheckTimer:stop()
+        self.idleCheckTimer = nil
+    end
+
+    -- Stop DNS refresh timer
+    if self.cursorDnsTimer then
+        self.cursorDnsTimer:stop()
+        self.cursorDnsTimer = nil
+    end
+
+    -- Stop dim timer
+    if self.dimTimer then
+        self.dimTimer:stop()
+        self.dimTimer = nil
+    end
+
+    -- Restore brightness
+    self:restoreBrightness()
+
+    -- Keep sleepWatcher running for systemDidWake!
+    -- Don't stop self.sleepWatcher
+
+    self.startTime = nil
+    self.consecutiveIdleSeconds = 0
+    self.enabled = false
+    self:updateMenubar()
+
+    print("[AntiSleep] Paused (sleepWatcher still active)")
     return self
 end
 
@@ -615,6 +784,12 @@ function obj:stop()
     if self.idleCheckTimer then
         self.idleCheckTimer:stop()
         self.idleCheckTimer = nil
+    end
+
+    -- Stop DNS refresh timer
+    if self.cursorDnsTimer then
+        self.cursorDnsTimer:stop()
+        self.cursorDnsTimer = nil
     end
 
     -- Stop sleep watcher

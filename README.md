@@ -18,7 +18,7 @@ A Hammerspoon Spoon for smart sleep management during Claude Code and Cursor ses
 ### Option 1: Clone directly to Spoons folder
 
 ```bash
-git clone https://github.com/yourusername/AntiSleep.spoon.git ~/.hammerspoon/Spoons/AntiSleep.spoon
+git clone https://github.com/kelion77/caffeneite.git ~/.hammerspoon/Spoons/AntiSleep.spoon
 ```
 
 ### Option 2: Download and copy
@@ -92,10 +92,16 @@ Every 60 seconds:
 ├─ Cursor idle? (API traffic delta < 100 bytes)
 │
 ├─ SCREEN LOCKED + BOTH IDLE → increment idle counter
-│   └─ 2 min reached → pmset sleepnow
+│   └─ 2 min reached → pause monitoring + pmset sleepnow
+│                       (timers stop, sleepWatcher stays active)
 │
 └─ SCREEN UNLOCKED or ANY AI ACTIVE → reset counter
 ```
+
+**Auto-restart after sleep**:
+- When sleep is triggered, monitoring pauses but sleepWatcher stays active
+- On wake (`systemDidWake` event), monitoring automatically restarts
+- Ensures sleep doesn't repeat immediately after waking
 
 ### 3. Sleep Prevention (caffeinate)
 
@@ -138,7 +144,8 @@ Log output example:
 | Method | Description |
 |--------|-------------|
 | `:start()` | Start smart sleep monitoring |
-| `:stop()` | Stop monitoring |
+| `:stop()` | Stop monitoring completely (including sleepWatcher) |
+| `:pause()` | Pause monitoring but keep sleepWatcher for auto-restart |
 | `:toggle()` | Toggle on/off |
 | `:isRunning()` | Returns `true` if active |
 | `:bindHotkeys(mapping)` | Bind keyboard shortcuts |
