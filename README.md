@@ -15,29 +15,11 @@ A Hammerspoon Spoon for smart sleep management during Claude Code and Cursor ses
 
 ## Installation
 
-### Option 1: Clone directly to Spoons folder
-
 ```bash
-git clone https://github.com/kelion77/caffeneite.git ~/.hammerspoon/Spoons/AntiSleep.spoon
+git clone https://github.com/kelion77/caffeneite.git /tmp/antisleep-install && mv /tmp/antisleep-install/AntiSleep.spoon ~/.hammerspoon/Spoons/ && rm -rf /tmp/antisleep-install && echo 'hs.loadSpoon("AntiSleep"); spoon.AntiSleep:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}}); spoon.AntiSleep:start()' >> ~/.hammerspoon/init.lua && killall Hammerspoon && open -a Hammerspoon
 ```
 
-### Option 2: Download and copy
-
-```bash
-cp -r AntiSleep.spoon ~/.hammerspoon/Spoons/
-```
-
-## Usage
-
-Add to your `~/.hammerspoon/init.lua`:
-
-```lua
-hs.loadSpoon("AntiSleep")
-spoon.AntiSleep:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}})
-spoon.AntiSleep:start()
-```
-
-Then reload Hammerspoon config.
+This will install the spoon, add it to your Hammerspoon config, and restart. Toggle with `Shift+Cmd+K`.
 
 ## Configuration
 

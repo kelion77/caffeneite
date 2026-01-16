@@ -15,29 +15,11 @@ Claude Code 및 Cursor 세션을 위한 스마트 잠자기 관리 Hammerspoon S
 
 ## 설치
 
-### 방법 1: Spoons 폴더에 직접 클론
-
 ```bash
-git clone https://github.com/kelion77/caffeneite.git ~/.hammerspoon/Spoons/AntiSleep.spoon
+git clone https://github.com/kelion77/caffeneite.git /tmp/antisleep-install && mv /tmp/antisleep-install/AntiSleep.spoon ~/.hammerspoon/Spoons/ && rm -rf /tmp/antisleep-install && echo 'hs.loadSpoon("AntiSleep"); spoon.AntiSleep:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}}); spoon.AntiSleep:start()' >> ~/.hammerspoon/init.lua && killall Hammerspoon && open -a Hammerspoon
 ```
 
-### 방법 2: 다운로드 후 복사
-
-```bash
-cp -r AntiSleep.spoon ~/.hammerspoon/Spoons/
-```
-
-## 사용법
-
-`~/.hammerspoon/init.lua`에 추가:
-
-```lua
-hs.loadSpoon("AntiSleep")
-spoon.AntiSleep:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}})
-spoon.AntiSleep:start()
-```
-
-Hammerspoon 설정 리로드 후 사용.
+spoon을 설치하고, Hammerspoon 설정에 추가하고, 재시작합니다. `Shift+Cmd+K`로 토글.
 
 ## 설정
 
