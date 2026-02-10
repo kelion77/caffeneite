@@ -45,11 +45,13 @@ Hammerspoon 설정 리로드 후 사용.
 hs.loadSpoon("AntiSleep")
 
 -- 잠자기 트리거 설정
-spoon.AntiSleep.sleepIdleMinutes = 2        -- X분 유휴 후 잠자기 (기본값: 2)
-spoon.AntiSleep.enableAutoSleep = true      -- 자동 잠자기 활성화 (기본값: true)
-spoon.AntiSleep.idleCheckInterval = 60      -- X초마다 체크 (기본값: 60)
-spoon.AntiSleep.minTrafficBytes = 100       -- AI 활성 판단 최소 바이트 (기본값: 100)
-spoon.AntiSleep.userIdleThreshold = 120     -- X초 후 사용자 유휴 (기본값: 120)
+spoon.AntiSleep.sleepIdleMinutes = 2            -- X분 유휴 후 잠자기 (기본값: 2)
+spoon.AntiSleep.enableAutoSleep = true          -- 자동 잠자기 활성화 (기본값: true)
+spoon.AntiSleep.idleCheckInterval = 60          -- X초마다 체크 (기본값: 60)
+spoon.AntiSleep.minTrafficBytes = 50000         -- Claude 활성 판단 최소 바이트 (기본값: 50KB)
+spoon.AntiSleep.minCursorTrafficBytes = 500000  -- Cursor 활성 판단 최소 바이트 (기본값: 500KB)
+spoon.AntiSleep.userIdleThreshold = 120         -- X초 후 사용자 유휴 (기본값: 120)
+spoon.AntiSleep.maxPreventionMinutes = 60       -- 화면 잠금 후 X분 경과 시 강제 잠자기 (기본값: 60)
 
 -- 화면 어둡게 설정
 spoon.AntiSleep.enableDimming = true        -- 화면 어둡게 활성화 (기본값: true)
@@ -88,15 +90,18 @@ spoon.AntiSleep:start()
 ```
 매 60초마다:
 ├─ 화면 잠금/꺼짐?
-├─ Claude 유휴? (API 트래픽 delta < 100 bytes)
-├─ Cursor 유휴? (API 트래픽 delta < 100 bytes)
+├─ Claude 유휴? (API 트래픽 delta < 50KB)
+├─ Cursor 유휴? (API 트래픽 delta < 500KB)
+├─ 최대 방지 시간 초과? (잠금 후 > 60분)
 │
-├─ 화면 잠금 + 둘 다 유휴 → idle 카운터 증가
+├─ 화면 잠금 + (둘 다 유휴 또는 최대 시간 초과) → idle 카운터 증가
 │   └─ 2분 도달 → 모니터링 일시정지 + pmset sleepnow
 │                  (타이머 중지, sleepWatcher는 유지)
 │
 └─ 화면 해제 또는 AI 활성 → 카운터 리셋
 ```
+
+**최대 방지 시간**: AI 트래픽이 감지되더라도 화면 잠금 후 60분이 지나면 강제로 잠자기를 허용하여 백그라운드 트래픽으로 인한 배터리 소모를 방지합니다.
 
 **잠자기 후 자동 재시작**:
 - 잠자기 트리거 시 모니터링은 일시정지되지만 sleepWatcher는 활성 유지

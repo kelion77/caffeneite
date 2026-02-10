@@ -45,11 +45,13 @@ Then reload Hammerspoon config.
 hs.loadSpoon("AntiSleep")
 
 -- Sleep trigger settings
-spoon.AntiSleep.sleepIdleMinutes = 2        -- sleep after X min idle (default: 2)
-spoon.AntiSleep.enableAutoSleep = true      -- enable auto sleep (default: true)
-spoon.AntiSleep.idleCheckInterval = 60      -- check every X sec (default: 60)
-spoon.AntiSleep.minTrafficBytes = 100       -- min bytes to consider AI active (default: 100)
-spoon.AntiSleep.userIdleThreshold = 120     -- user idle after X sec (default: 120)
+spoon.AntiSleep.sleepIdleMinutes = 2            -- sleep after X min idle (default: 2)
+spoon.AntiSleep.enableAutoSleep = true          -- enable auto sleep (default: true)
+spoon.AntiSleep.idleCheckInterval = 60          -- check every X sec (default: 60)
+spoon.AntiSleep.minTrafficBytes = 50000         -- min bytes to consider Claude active (default: 50KB)
+spoon.AntiSleep.minCursorTrafficBytes = 500000  -- min bytes to consider Cursor active (default: 500KB)
+spoon.AntiSleep.userIdleThreshold = 120         -- user idle after X sec (default: 120)
+spoon.AntiSleep.maxPreventionMinutes = 60       -- force sleep after screen locked for X min (default: 60)
 
 -- Dimming settings
 spoon.AntiSleep.enableDimming = true        -- enable screen dimming (default: true)
@@ -88,15 +90,18 @@ Based on [Cursor's official network configuration](https://cursor.com/docs/enter
 ```
 Every 60 seconds:
 ├─ Screen locked/off?
-├─ Claude idle? (API traffic delta < 100 bytes)
-├─ Cursor idle? (API traffic delta < 100 bytes)
+├─ Claude idle? (API traffic delta < 50KB)
+├─ Cursor idle? (API traffic delta < 500KB)
+├─ Max prevention time exceeded? (locked > 60 min)
 │
-├─ SCREEN LOCKED + BOTH IDLE → increment idle counter
+├─ SCREEN LOCKED + (BOTH IDLE or MAX TIME EXCEEDED) → increment idle counter
 │   └─ 2 min reached → pause monitoring + pmset sleepnow
 │                       (timers stop, sleepWatcher stays active)
 │
 └─ SCREEN UNLOCKED or ANY AI ACTIVE → reset counter
 ```
+
+**Max Prevention Time**: Even if AI traffic is detected, sleep is forced after 60 minutes of screen lock to prevent battery drain from background traffic.
 
 **Auto-restart after sleep**:
 - When sleep is triggered, monitoring pauses but sleepWatcher stays active

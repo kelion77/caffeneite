@@ -57,9 +57,11 @@ obj.dimMinBrightness = 20       -- minimum brightness (%)
 obj.sleepIdleMinutes = 2        -- trigger sleep after X minutes of combined idle
 obj.enableAutoSleep = true      -- enable automatic sleep trigger
 obj.idleCheckInterval = 60      -- check idle status every 60 seconds
-obj.minTrafficBytes = 50000     -- minimum bytes delta to consider AI "active" (50KB, filters out keep-alive/teardown traffic)
+obj.minTrafficBytes = 50000     -- minimum bytes delta to consider Claude "active" (50KB)
+obj.minCursorTrafficBytes = 500000  -- minimum bytes delta to consider Cursor "active" (500KB, filters out idle keep-alive/telemetry)
 obj.userIdleThreshold = 120     -- user idle seconds to consider user "inactive" (2 min)
 obj.sleepGracePeriod = 180      -- don't restart caffeinate for X sec after sleep trigger (3 min)
+obj.maxPreventionMinutes = 60   -- force sleep after screen locked for this long, regardless of traffic
 
 -- API IP patterns
 obj.claudeIpPatterns = {
@@ -560,17 +562,26 @@ function obj:checkIdleAndSleep()
     end
     self.lastCursorBytes = cursorBytes
 
-    -- Determine activity status (either one active = not idle)
+    -- Determine activity status (separate thresholds for Claude vs Cursor)
     local claudeActive = claudeDelta >= self.minTrafficBytes
-    local cursorActive = cursorDelta >= self.minTrafficBytes
+    local cursorActive = cursorDelta >= self.minCursorTrafficBytes
     local isIdle = not claudeActive and not cursorActive
+
+    -- Check max prevention time (force sleep if screen locked too long)
+    local maxPreventionExceeded = false
+    if self.isScreenLocked and self.screenLockedTime then
+        local lockedDuration = os.time() - self.screenLockedTime
+        if lockedDuration >= self.maxPreventionMinutes * 60 then
+            maxPreventionExceeded = true
+        end
+    end
 
     -- DEBUG: Log comparison values
     if self.isScreenLocked then
         local df = io.open("/tmp/antisleep.log", "a")
         if df then
-            df:write(os.date("%H:%M:%S ") .. string.format("[DEBUG] cursorDelta=%d, threshold=%d, cursorActive=%s, isIdle=%s\n",
-                cursorDelta, self.minTrafficBytes, tostring(cursorActive), tostring(isIdle)))
+            df:write(os.date("%H:%M:%S ") .. string.format("[DEBUG] cursorDelta=%d, threshold=%d, cursorActive=%s, isIdle=%s, maxPrevExceeded=%s\n",
+                cursorDelta, self.minCursorTrafficBytes, tostring(cursorActive), tostring(isIdle), tostring(maxPreventionExceeded)))
             df:close()
         end
     end
@@ -594,7 +605,7 @@ function obj:checkIdleAndSleep()
 
     -- Update idle counter
     local sleepThresholdSecs = self.sleepIdleMinutes * 60
-    if self.isScreenLocked and isIdle then
+    if self.isScreenLocked and (isIdle or maxPreventionExceeded) then
         self.consecutiveIdleSeconds = self.consecutiveIdleSeconds + self.idleCheckInterval
     else
         if not inGracePeriod then
@@ -609,10 +620,13 @@ function obj:checkIdleAndSleep()
         -- If in grace period, don't reset - let the sleep attempt complete
     end
 
-    -- Manage caffeinate: keep ON while screen locked UNTIL idle threshold reached
+    -- Manage caffeinate: keep ON while screen locked UNTIL idle threshold reached or max prevention exceeded
     -- IMPORTANT: During grace period, don't restart caffeinate to allow sleep to happen
     if inGracePeriod then
         -- During grace period after sleep trigger: keep caffeinate OFF
+        self:stopCaffeinate()
+    elseif maxPreventionExceeded then
+        -- Max prevention time exceeded: stop caffeinate to allow sleep
         self:stopCaffeinate()
     elseif not self.isScreenLocked then
         -- Screen unlocked: caffeinate based on activity only
@@ -636,6 +650,9 @@ function obj:checkIdleAndSleep()
         local remaining = self.sleepGracePeriod - (os.time() - self.sleepTriggeredTime)
         extraStatus = string.format(", GRACE=%ds", remaining)
     end
+    if maxPreventionExceeded then
+        extraStatus = extraStatus .. ", MAX_PREV_EXCEEDED"
+    end
     local logMsg = string.format("[AntiSleep] Check: screen=%s, Claude=%s, Cursor=%s, caffeinate=%s, idle=%ds/%ds%s",
         self.isScreenLocked and "LOCKED" or "UNLOCKED",
         self:formatBytes(claudeDelta),
@@ -648,8 +665,10 @@ function obj:checkIdleAndSleep()
     local f = io.open("/tmp/antisleep.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
-    -- Trigger sleep if threshold reached (only once per cycle)
-    if self.isScreenLocked and isIdle and self.consecutiveIdleSeconds >= sleepThresholdSecs then
+    -- Trigger sleep if threshold reached OR max prevention exceeded (only once per cycle)
+    local shouldSleep = self.isScreenLocked and self.consecutiveIdleSeconds >= sleepThresholdSecs
+        and (isIdle or maxPreventionExceeded)
+    if shouldSleep then
         if not self.sleepTriggerPending then
             self.sleepTriggerPending = true
             self:triggerSleep()
