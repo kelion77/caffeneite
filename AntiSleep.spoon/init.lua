@@ -372,6 +372,18 @@ function obj:triggerSleep()
 
     -- Small delay to ensure caffeinate is fully dead, then trigger sleep
     hs.timer.doAfter(0.5, function()
+        -- Abort if user unlocked screen during the delay
+        if not self.isScreenLocked then
+            local abortMsg = "[AntiSleep] Sleep aborted - screen was unlocked during delay"
+            print(abortMsg)
+            local af = io.open("/tmp/antisleep.log", "a")
+            if af then af:write(os.date("%H:%M:%S ") .. abortMsg .. "\n"); af:close() end
+            self.sleepTriggeredByUs = false
+            self.sleepTriggerPending = false
+            self:start()
+            return
+        end
+
         local output = hs.execute("pmset sleepnow 2>&1")
         local logMsg2 = "[AntiSleep] pmset sleepnow executed"
         print(logMsg2)
@@ -413,6 +425,26 @@ function obj:setupSleepWatcher()
             self_ref.isScreenLocked = false
             self_ref.screenLockedTime = nil
             self_ref.consecutiveIdleSeconds = 0  -- reset idle counter on unlock
+
+            -- Safety net: if wake suppression was active, force restart monitoring
+            if self_ref.sleepTriggeredByUs then
+                local logMsg = "[AntiSleep] Screen unlocked while suppressed - force restarting monitoring"
+                print(logMsg)
+                local f = io.open("/tmp/antisleep.log", "a")
+                if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+
+                self_ref.sleepTriggeredByUs = false
+                self_ref.sleepOccurredWhileLocked = false
+                self_ref.sleepTriggerPending = false
+                self_ref.sleepTriggeredTime = nil
+                self_ref.lastSleepTime = nil
+                self_ref.preventionDuration = nil
+                self_ref.autoWakeSuppressCount = 0
+
+                if not self_ref.enabled then
+                    self_ref:start()
+                end
+            end
         elseif eventType == hs.caffeinate.watcher.screensDidSleep then
             -- Screen turned off (display sleep)
             self_ref.isScreenLocked = true
@@ -454,10 +486,84 @@ function obj:formatDuration(seconds)
     end
 end
 
+--- AntiSleep:getWakeReason()
+--- Method
+--- Determine if this wake was user-initiated or automatic (Power Nap / DarkWake)
+--- Returns: wakeType ("user"|"darkwake"|"unknown"), detail (log excerpt)
+function obj:getWakeReason()
+    -- Parse recent pmset log for wake events
+    local cmd = "pmset -g log 2>/dev/null | grep -E 'DarkWake|Wake from' | tail -3"
+    local output, status = hs.execute(cmd)
+
+    if not status or not output or output == "" then
+        return "unknown", "no pmset log output"
+    end
+
+    -- Get the last line (most recent event)
+    local lastLine = nil
+    for line in output:gmatch("[^\n]+") do
+        lastLine = line
+    end
+
+    if not lastLine then
+        return "unknown", "no matching log lines"
+    end
+
+    -- Check patterns (order matters):
+    -- 1) "DarkWake to FullWake" = automatic wake promoted from DarkWake
+    if lastLine:match("DarkWake to FullWake") then
+        return "darkwake", lastLine
+    end
+
+    -- 2) "DarkWake from" = pure DarkWake (Power Nap)
+    if lastLine:match("DarkWake from") then
+        return "darkwake", lastLine
+    end
+
+    -- 3) "Wake from" without "Dark" = user-initiated wake
+    if lastLine:match("Wake from") and not lastLine:match("DarkWake") then
+        return "user", lastLine
+    end
+
+    return "unknown", lastLine
+end
+
 --- AntiSleep:onSystemWake()
 --- Method
 --- Handle system wake event - show notification if sleep occurred while screen was locked
 function obj:onSystemWake()
+    -- If we triggered this sleep, check whether this is a user wake or automatic wake
+    if self.sleepTriggeredByUs then
+        local wakeType, wakeDetail = self:getWakeReason()
+
+        local logMsg = string.format("[AntiSleep] Wake detected (our sleep): type=%s, detail=%s", wakeType, wakeDetail)
+        print(logMsg)
+        local f = io.open("/tmp/antisleep.log", "a")
+        if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+
+        if wakeType ~= "user" then
+            -- Automatic wake (DarkWake/Power Nap or unknown) - suppress caffeinate restart
+            -- Keep sleepTriggeredByUs = true so next wake is also checked
+            -- Keep sleepOccurredWhileLocked so state is preserved
+            -- System will naturally go back to sleep without caffeinate running
+            self.consecutiveIdleSeconds = 0
+            self.lastSleepTime = os.time()  -- accurate sleep duration for next wake
+            self.autoWakeSuppressCount = (self.autoWakeSuppressCount or 0) + 1
+
+            local suppressMsg = string.format("[AntiSleep] Suppressing restart (automatic wake: %s, count=%d) - system will re-sleep naturally", wakeType, self.autoWakeSuppressCount)
+            print(suppressMsg)
+            local sf = io.open("/tmp/antisleep.log", "a")
+            if sf then sf:write(os.date("%H:%M:%S ") .. suppressMsg .. "\n"); sf:close() end
+            return  -- do NOT restart monitoring
+        end
+
+        -- User wake - fall through to normal wake handling
+        local userMsg = "[AntiSleep] User wake confirmed - proceeding with normal restart"
+        print(userMsg)
+        local uf = io.open("/tmp/antisleep.log", "a")
+        if uf then uf:write(os.date("%H:%M:%S ") .. userMsg .. "\n"); uf:close() end
+    end
+
     -- Show notification if sleep occurred while screen was locked
     if self.sleepOccurredWhileLocked and self.lastSleepTime then
         local sleepDuration = os.time() - self.lastSleepTime
@@ -469,7 +575,9 @@ function obj:onSystemWake()
 
         -- Determine reason with more detail
         local reason
-        if self.sleepTriggeredByUs then
+        if (self.autoWakeSuppressCount or 0) > 0 then
+            reason = string.format("Auto-sleep + %d auto-wakes suppressed", self.autoWakeSuppressCount)
+        elseif self.sleepTriggeredByUs then
             reason = string.format("Claude/Cursor idle for %d min", self.sleepIdleMinutes)
         else
             reason = "System idle timeout"
@@ -507,6 +615,7 @@ function obj:onSystemWake()
     self.lastSleepTime = nil
     self.preventionDuration = nil
     self.consecutiveIdleSeconds = 0
+    self.autoWakeSuppressCount = 0
 
     -- Auto-restart if sleepWatcher is active but monitoring is paused
     if self.sleepWatcher and not self.enabled then
