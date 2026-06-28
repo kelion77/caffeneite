@@ -2,13 +2,19 @@
   {
     "name": "AntiSleep",
     "type": "Module",
-    "desc": "Prevents macOS from sleeping using caffeinate + keystroke simulation. Useful for bypassing MDM idle detection.",
+    "desc": "Smart sleep management with AI traffic detection and an optional keep-unlocked mode.",
     "items": [
       {
-        "name": "keystrokeInterval",
+        "name": "mode",
         "type": "Variable",
-        "def": "AntiSleep.keystrokeInterval",
-        "desc": "Seconds between keystroke simulations. Default: 60"
+        "def": "AntiSleep.mode",
+        "desc": "Operating mode: \"smart\" or \"keepUnlocked\". Default: \"smart\""
+      },
+      {
+        "name": "preventLockPulseInterval",
+        "type": "Variable",
+        "def": "AntiSleep.preventLockPulseInterval",
+        "desc": "Seconds between user activity assertions in keepUnlocked mode. Default: 55"
       },
       {
         "name": "showMenubar",
@@ -21,6 +27,18 @@
         "type": "Variable",
         "def": "AntiSleep.showAlerts",
         "desc": "Show on/off alerts. Default: true"
+      },
+      {
+        "name": "setMode",
+        "type": "Method",
+        "def": "AntiSleep:setMode(mode)",
+        "desc": "Set operating mode to \"smart\" or \"keepUnlocked\""
+      },
+      {
+        "name": "startMode",
+        "type": "Method",
+        "def": "AntiSleep:startMode(mode)",
+        "desc": "Set operating mode and start monitoring if needed"
       },
       {
         "name": "start",

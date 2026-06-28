@@ -1,7 +1,7 @@
 --- === AntiSleep ===
 ---
---- Smart sleep management for Claude Code sessions.
---- Monitors user activity + Claude API traffic, triggers sleep when both are idle.
+--- Smart sleep management for Claude Code / Codex / Cursor sessions.
+--- Monitors user activity + AI tool traffic, triggers sleep when both are idle.
 ---
 --- Features:
 ---   - Traffic-based auto sleep (sleeps when both user and Claude are idle)
@@ -11,9 +11,12 @@
 local obj = {}
 obj.__index = obj
 
+local sourceFile = debug.getinfo(1, "S").source
+local spoonPath = sourceFile and sourceFile:match("^@(.+)/init%.lua$")
+
 -- Metadata
 obj.name = "AntiSleep"
-obj.version = "1.4.0"
+obj.version = "1.5.0"
 obj.author = "Your Name"
 obj.license = "MIT"
 obj.homepage = "https://github.com/yourusername/AntiSleep.spoon"
@@ -23,11 +26,15 @@ obj.enabled = false
 obj.dimTimer = nil
 obj.idleCheckTimer = nil
 obj.menubar = nil
+obj.spoonPath = spoonPath
 obj.originalBrightness = nil
 obj.currentBrightness = nil
 obj.startTime = nil
+obj.mode = "smart"                 -- smart | keepUnlocked
 obj.lastClaudeBytes = nil         -- for Claude delta calculation
 obj.lastCursorBytes = nil         -- for Cursor delta calculation
+obj.lastCodexConns = nil          -- per-connection byte counts for Codex delta calculation
+obj.lastCodexActiveTime = nil     -- when Codex traffic last exceeded threshold (for cooldown)
 obj.consecutiveIdleSeconds = 0
 obj.userActivityWatcher = nil
 obj.sleepWatcher = nil
@@ -41,10 +48,20 @@ obj.sleepTriggeredTime = nil          -- when sleep was triggered (for grace per
 obj.isScreenLocked = false        -- track if screen is locked
 obj.caffeinateTask = nil          -- caffeinate process for sleep prevention
 obj.isCaffeinateRunning = false   -- track caffeinate state
+obj.caffeinateMode = nil          -- smart | keepUnlocked
+obj.preventLockTimer = nil        -- periodic user activity assertion for keep-unlocked mode
+obj._menubarIconCache = nil       -- cached hs.image objects
 
 -- Configuration
 obj.showMenubar = true          -- show menubar icon
 obj.showAlerts = true           -- show on/off alerts
+obj.preventLockPulseInterval = 55 -- seconds between user activity assertions in keep-unlocked mode
+obj.menubarIconSize = 24        -- status bar icon size in pixels
+obj.menubarIcons = {
+    smart = "assets/icons/status-smart.png",
+    keepUnlocked = "assets/icons/status-unlocked.png",
+    off = "assets/icons/status-off.png",
+}
 
 -- Dimming configuration
 obj.enableDimming = false       -- DISABLED - was dimming during active use
@@ -59,6 +76,12 @@ obj.enableAutoSleep = true      -- enable automatic sleep trigger
 obj.idleCheckInterval = 60      -- check idle status every 60 seconds
 obj.minTrafficBytes = 50000     -- minimum bytes delta to consider Claude "active" (50KB)
 obj.minCursorTrafficBytes = 500000  -- minimum bytes delta to consider Cursor "active" (500KB, filters out idle keep-alive/telemetry)
+obj.minCodexTrafficBytes = 50000    -- minimum bytes delta to consider Codex "active" (50KB)
+                                    -- calibrated live: active-light sessions show 55-90KB/min,
+                                    -- idle floor is ~0-12KB/min
+obj.codexActiveCooldown = 600       -- keep Codex "active" for X sec after last traffic burst (10 min)
+                                    -- bridges quiet stretches during real work: local builds/tests,
+                                    -- long server-side reasoning, and connection-close artifacts
 obj.userIdleThreshold = 120     -- user idle seconds to consider user "inactive" (2 min)
 obj.sleepGracePeriod = 180      -- don't restart caffeinate for X sec after sleep trigger (3 min)
 obj.maxPreventionMinutes = 60   -- force sleep after screen locked for this long, regardless of traffic
@@ -82,6 +105,16 @@ obj.cursorDomains = {
 }
 obj.cursorDnsRefreshInterval = 1800  -- refresh DNS every 30 minutes
 obj.cursorDnsTimer = nil
+
+-- Codex process names for per-process traffic monitoring (nettop)
+-- Codex talks to Cloudflare-shared IPs (api.openai.com / chatgpt.com), often over
+-- IPv6, so netstat IP-pattern matching would both miss traffic (IPv6) and
+-- false-positive (shared IPs). Per-process nettop is accurate instead.
+-- "codex" covers: codex CLI, codex exec, and `codex app-server`
+-- (desktop app local tasks, Claude Code plugin broker, remote-control daemon)
+obj.codexProcessNames = {
+    "codex",
+}
 
 --- AntiSleep:refreshCursorIPs()
 --- Method
@@ -132,7 +165,7 @@ function obj:init()
     if self.showMenubar then
         self.menubar = hs.menubar.new()
         if self.menubar then
-            self.menubar:setClickCallback(function() self:toggle() end)
+            self.menubar:setMenu(function() return self:menuItems() end)
         end
     end
     self:updateMenubar()
@@ -165,6 +198,7 @@ function obj:updateMenubar()
     if self.enabled then
         local elapsed = ""
         local status = ""
+        local modeLabel = self.mode == "keepUnlocked" and "Smart Unlocked" or "Smart Sleep"
         if self.startTime then
             local secs = os.time() - self.startTime
             local mins = math.floor(secs / 60)
@@ -185,14 +219,127 @@ function obj:updateMenubar()
             -- Show caffeinate status
             status = status .. string.format("\nCaffeinate: %s", self.isCaffeinateRunning and "ON" or "OFF")
         end
-        self.menubar:setTitle("👁")
-        tooltip = tooltip .. "Monitoring" .. elapsed .. status
+        self:setMenubarIcon(self.mode)
+        tooltip = tooltip .. modeLabel .. elapsed .. status
     else
-        self.menubar:setTitle("💤")
-        tooltip = tooltip .. "OFF (click to toggle)"
+        self:setMenubarIcon("off")
+        tooltip = tooltip .. "OFF"
     end
 
     self.menubar:setTooltip(tooltip)
+end
+
+--- AntiSleep:assetPath(relativePath)
+--- Method
+--- Resolve a path relative to this Spoon.
+function obj:assetPath(relativePath)
+    if not self.spoonPath then return nil end
+    return self.spoonPath .. "/" .. relativePath
+end
+
+--- AntiSleep:loadMenubarIcon(state)
+--- Method
+--- Load and cache a menu bar icon for a state.
+function obj:loadMenubarIcon(state)
+    self._menubarIconCache = self._menubarIconCache or {}
+    if self._menubarIconCache[state] then
+        return self._menubarIconCache[state]
+    end
+
+    local relativePath = self.menubarIcons[state]
+    if not relativePath then return nil end
+
+    local path = self:assetPath(relativePath)
+    if not path then return nil end
+
+    local icon = hs.image.imageFromPath(path)
+    if not icon then return nil end
+
+    icon = icon:setSize({ w = self.menubarIconSize, h = self.menubarIconSize })
+    self._menubarIconCache[state] = icon
+    return icon
+end
+
+--- AntiSleep:setMenubarIcon(state)
+--- Method
+--- Set the menu bar icon image for a state.
+function obj:setMenubarIcon(state)
+    local icon = self:loadMenubarIcon(state)
+    if not icon then return false end
+
+    self.menubar:setTitle("")
+    self.menubar:setIcon(icon, false)
+    self.menubar:imagePosition(hs.menubar.imagePositions.imageOnly)
+    return true
+end
+
+--- AntiSleep:menuItems()
+--- Method
+--- Build menubar menu items
+function obj:menuItems()
+    local modeLabel = self.mode == "keepUnlocked" and "Smart Unlocked" or "Smart Sleep"
+    local statusLabel = self.enabled and ("Status: ON - " .. modeLabel) or "Status: OFF"
+    local smartTitle = self.enabled and "Smart Sleep" or "Start Smart Sleep"
+    local keepUnlockedTitle = self.enabled and "Smart Unlocked" or "Start Smart Unlocked"
+
+    return {
+        { title = statusLabel, disabled = true },
+        { title = "-" },
+        { title = smartTitle, checked = self.enabled and self.mode == "smart", fn = function() self:startMode("smart") end },
+        { title = keepUnlockedTitle, checked = self.enabled and self.mode == "keepUnlocked", fn = function() self:startMode("keepUnlocked") end },
+        { title = "-" },
+        { title = "Stop", disabled = not self.enabled, fn = function() self:stop() end },
+    }
+end
+
+--- AntiSleep:startMode(mode)
+--- Method
+--- Select a mode and start monitoring if needed.
+function obj:startMode(mode)
+    self:setMode(mode)
+    if not self.enabled then
+        self:start()
+    end
+    return self
+end
+
+--- AntiSleep:setMode(mode)
+--- Method
+--- Set operating mode: smart or keepUnlocked
+function obj:setMode(mode)
+    if mode ~= "smart" and mode ~= "keepUnlocked" then
+        return self
+    end
+    if self.mode == mode then
+        return self
+    end
+
+    self.mode = mode
+
+    if self.enabled then
+        if self.mode == "keepUnlocked" then
+            if self.isCaffeinateRunning then
+                self:startPreventLockTimer()
+                self:startCaffeinate()
+            end
+        else
+            self:stopPreventLockTimer()
+            if self.isCaffeinateRunning then
+                self:startCaffeinate()
+            end
+        end
+    end
+
+    self:updateMenubar()
+
+    if self.showAlerts then
+        local msg = self.mode == "keepUnlocked"
+            and "🔓 AntiSleep: Smart Unlocked"
+            or "👁 AntiSleep: Smart Sleep"
+        hs.alert.show(msg, 2)
+    end
+
+    return self
 end
 
 --- AntiSleep:isUserActive()
@@ -259,9 +406,81 @@ function obj:restoreBrightness()
     end
 end
 
+--- AntiSleep:getCodexTrafficBytes()
+--- Method
+--- Get total bytes transferred by Codex processes (per-process via nettop)
+function obj:getCodexTrafficBytes()
+    local total = 0
+    for _, name in ipairs(self.codexProcessNames) do
+        -- Summary rows look like "codex.12345  <bytes_in>  <bytes_out>";
+        -- connection rows start with tcp/udp, so anchor on the process name.
+        -- NOTE: do NOT use `-t external` — it filters by physical interface and
+        -- drops VPN-tunneled traffic (e.g. CloudflareWARP routes Codex over a
+        -- utun tunnel as 100.64.0.0/10 CGNAT, which nettop won't class external).
+        local cmd = string.format(
+            "nettop -x -l 1 -p %s -J bytes_in,bytes_out 2>/dev/null | awk '$1 ~ /^%s\\./ {sum += $2 + $3} END {print sum+0}'",
+            name, name
+        )
+        local output, status = hs.execute(cmd)
+        if status and output then
+            total = total + (tonumber(output:match("%d+")) or 0)
+        end
+    end
+    return total
+end
+
+--- AntiSleep:getCodexTrafficDelta()
+--- Method
+--- Get bytes transferred by Codex processes since the last call, tracked
+--- PER CONNECTION. nettop reports cumulative bytes of currently open
+--- connections, so a process-level sum drops when any connection closes —
+--- which can mask a real burst on another connection (observed live) or
+--- read as a phantom change. Per-connection counters only ever grow during
+--- a connection's lifetime, so:
+---   - ongoing connection → its positive delta counts
+---   - new connection     → all its bytes count
+---   - closed connection  → simply drops out (contributes 0, masks nothing)
+function obj:getCodexTrafficDelta()
+    local conns = {}
+    for _, name in ipairs(self.codexProcessNames) do
+        -- Connection rows look like "tcp6 <src><-><dst>  <bytes_in>  <bytes_out>"
+        -- Exclude loopback in awk rather than via nettop's `-t external` flag:
+        -- `-t external` filters by physical interface and silently drops
+        -- VPN-tunneled traffic (CloudflareWARP routes Codex over a utun tunnel
+        -- as 100.64.0.0/10 CGNAT), which would zero out detection while a VPN
+        -- is active. The loopback filter keeps the same noise-reduction intent.
+        local cmd = string.format(
+            "nettop -x -l 1 -p %s -J bytes_in,bytes_out 2>/dev/null | awk '$1 ~ /^(tcp|udp)/ && $2 !~ /127\\.0\\.0\\.1|::1/ {print $2, $3 + $4}'",
+            name
+        )
+        local output, status = hs.execute(cmd)
+        if status and output then
+            for conn, bytes in output:gmatch("(%S+)%s+(%d+)") do
+                conns[conn] = (conns[conn] or 0) + tonumber(bytes)
+            end
+        end
+    end
+
+    local delta = 0
+    if self.lastCodexConns then
+        for conn, bytes in pairs(conns) do
+            local prev = self.lastCodexConns[conn]
+            if prev then
+                local d = bytes - prev
+                if d > 0 then delta = delta + d end
+            else
+                delta = delta + bytes  -- new connection since last check
+            end
+        end
+    end
+    self.lastCodexConns = conns
+    return delta
+end
+
 --- AntiSleep:getTrafficBytesSeparate()
 --- Method
---- Get bytes transferred separately for Claude and Cursor
+--- Get bytes transferred separately for Claude and Cursor (netstat IP-based).
+--- Codex is measured separately via getCodexTrafficDelta() (per-connection).
 function obj:getTrafficBytesSeparate()
     local claudeBytes = 0
     local cursorBytes = 0
@@ -295,29 +514,92 @@ end
 
 --- AntiSleep:getApiTrafficBytes()
 --- Method
---- Get total bytes transferred to/from AI APIs (Anthropic + Cursor) using netstat -b
+--- Get total bytes transferred to/from AI APIs (Anthropic + Cursor + Codex)
 function obj:getApiTrafficBytes()
     local claudeBytes, cursorBytes = self:getTrafficBytesSeparate()
-    return claudeBytes + cursorBytes
+    return claudeBytes + cursorBytes + self:getCodexTrafficBytes()
+end
+
+--- AntiSleep:pulseUserActivity()
+--- Method
+--- Tell macOS the user is active so idle lock/screen saver does not start.
+function obj:pulseUserActivity()
+    if not self.enabled or self.mode ~= "keepUnlocked" then return end
+
+    local ok, err = pcall(function()
+        hs.caffeinate.declareUserActivity()
+    end)
+    if not ok then
+        local logMsg = "[AntiSleep] WARN: declareUserActivity failed: " .. tostring(err)
+        print(logMsg)
+        local f = io.open("/tmp/antisleep.log", "a")
+        if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+    end
+end
+
+--- AntiSleep:startPreventLockTimer()
+--- Method
+--- Start periodic user activity assertions for keep-unlocked mode.
+function obj:startPreventLockTimer()
+    if self.preventLockTimer then return end
+
+    self:pulseUserActivity()
+    self.preventLockTimer = hs.timer.doEvery(self.preventLockPulseInterval, function()
+        self:pulseUserActivity()
+    end)
+
+    local logMsg = "[AntiSleep] Prevent-lock timer started"
+    print(logMsg)
+    local f = io.open("/tmp/antisleep.log", "a")
+    if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+end
+
+--- AntiSleep:stopPreventLockTimer()
+--- Method
+--- Stop periodic user activity assertions.
+function obj:stopPreventLockTimer()
+    if self.preventLockTimer then
+        self.preventLockTimer:stop()
+        self.preventLockTimer = nil
+
+        local logMsg = "[AntiSleep] Prevent-lock timer stopped"
+        print(logMsg)
+        local f = io.open("/tmp/antisleep.log", "a")
+        if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+    end
 end
 
 --- AntiSleep:startCaffeinate()
 --- Method
---- Start caffeinate to prevent idle system sleep (but allow display sleep for Lock)
+--- Start caffeinate to prevent sleep. keepUnlocked also prevents display sleep.
 function obj:startCaffeinate()
-    if self.isCaffeinateRunning then return end
+    local targetMode = self.mode == "keepUnlocked" and "keepUnlocked" or "smart"
+    if self.isCaffeinateRunning and self.caffeinateMode == targetMode then return end
+
+    if self.isCaffeinateRunning then
+        self:stopCaffeinate()
+    end
 
     -- SAFETY: Kill any orphan caffeinate before starting a new one
     -- This prevents multiple caffeinate processes from accumulating
     hs.execute("killall caffeinate 2>/dev/null")
 
-    -- -is: prevent idle sleep AND system sleep (including lid close)
-    -- Display sleep still allowed (screen lock works)
-    self.caffeinateTask = hs.task.new("/usr/bin/caffeinate", nil, {"-is"})
+    local args
+    if targetMode == "keepUnlocked" then
+        -- -d: prevent display sleep, which avoids idle lock caused by display sleep.
+        -- -i/-s: keep the system awake while browser/emulator automation runs.
+        args = {"-dis"}
+    else
+        -- -i/-s: prevent idle/system sleep while still allowing display lock.
+        args = {"-is"}
+    end
+
+    self.caffeinateTask = hs.task.new("/usr/bin/caffeinate", nil, args)
     self.caffeinateTask:start()
     self.isCaffeinateRunning = true
+    self.caffeinateMode = targetMode
 
-    local logMsg = "[AntiSleep] Caffeinate started (sleep prevention ON)"
+    local logMsg = string.format("[AntiSleep] Caffeinate started (%s mode)", targetMode)
     print(logMsg)
     local f = io.open("/tmp/antisleep.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
@@ -338,6 +620,7 @@ function obj:stopCaffeinate()
     -- Force kill as backup
     hs.execute("killall caffeinate 2>/dev/null")
     self.isCaffeinateRunning = false
+    self.caffeinateMode = nil
 
     local logMsg = "[AntiSleep] Caffeinate stopped (sleep prevention OFF)"
     print(logMsg)
@@ -352,11 +635,12 @@ function obj:triggerSleep()
     -- Get last traffic values for logging
     local claudeStr = self:formatBytes(self._lastClaudeDelta or 0)
     local cursorStr = self:formatBytes(self._lastCursorDelta or 0)
+    local codexStr = self:formatBytes(self._lastCodexDelta or 0)
     local thresholdStr = self:formatBytes(self.minTrafficBytes)
 
     -- Log the event with reason
-    local logMsg = string.format("[AntiSleep] Auto-sleep: Claude=%s, Cursor=%s (threshold=%s) → pausing and sleeping",
-        claudeStr, cursorStr, thresholdStr)
+    local logMsg = string.format("[AntiSleep] Auto-sleep: Claude=%s, Cursor=%s, Codex=%s (threshold=%s) → pausing and sleeping",
+        claudeStr, cursorStr, codexStr, thresholdStr)
     print(logMsg)
     local f = io.open("/tmp/antisleep.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
@@ -578,7 +862,7 @@ function obj:onSystemWake()
         if (self.autoWakeSuppressCount or 0) > 0 then
             reason = string.format("Auto-sleep + %d auto-wakes suppressed", self.autoWakeSuppressCount)
         elseif self.sleepTriggeredByUs then
-            reason = string.format("Claude/Cursor idle for %d min", self.sleepIdleMinutes)
+            reason = string.format("Claude/Cursor/Codex idle for %d min", self.sleepIdleMinutes)
         else
             reason = "System idle timeout"
         end
@@ -671,10 +955,37 @@ function obj:checkIdleAndSleep()
     end
     self.lastCursorBytes = cursorBytes
 
-    -- Determine activity status (separate thresholds for Claude vs Cursor)
+    -- Calculate Codex delta (per-connection tracking, see getCodexTrafficDelta)
+    local codexDelta = self:getCodexTrafficDelta()
+
+    -- Determine activity status (separate thresholds per tool)
     local claudeActive = claudeDelta >= self.minTrafficBytes
     local cursorActive = cursorDelta >= self.minCursorTrafficBytes
-    local isIdle = not claudeActive and not cursorActive
+    local codexActive = codexDelta >= self.minCodexTrafficBytes
+
+    -- Codex cooldown: real work has quiet stretches (local builds/tests, long
+    -- server-side reasoning) and connection closes that read as zero delta.
+    -- Keep Codex "active" for codexActiveCooldown after the last traffic burst
+    -- so those gaps don't trigger sleep mid-work. maxPreventionMinutes still
+    -- bounds total awake time.
+    local codexInCooldown = false
+    if codexActive then
+        self.lastCodexActiveTime = os.time()
+    elseif self.lastCodexActiveTime
+        and (os.time() - self.lastCodexActiveTime) < self.codexActiveCooldown then
+        codexActive = true
+        codexInCooldown = true
+    end
+
+    -- Check for external "keep awake" marker (e.g., kel pipeline waiting for CI)
+    local externalActive = false
+    local markerFile = io.open("/tmp/kel-pipeline-active", "r")
+    if markerFile then
+        markerFile:close()
+        externalActive = true
+    end
+
+    local isIdle = not claudeActive and not cursorActive and not codexActive and not externalActive
 
     -- Check max prevention time (force sleep if screen locked too long)
     local maxPreventionExceeded = false
@@ -689,8 +1000,8 @@ function obj:checkIdleAndSleep()
     if self.isScreenLocked then
         local df = io.open("/tmp/antisleep.log", "a")
         if df then
-            df:write(os.date("%H:%M:%S ") .. string.format("[DEBUG] cursorDelta=%d, threshold=%d, cursorActive=%s, isIdle=%s, maxPrevExceeded=%s\n",
-                cursorDelta, self.minCursorTrafficBytes, tostring(cursorActive), tostring(isIdle), tostring(maxPreventionExceeded)))
+            df:write(os.date("%H:%M:%S ") .. string.format("[DEBUG] cursorDelta=%d, codexDelta=%d, codexActive=%s, cursorActive=%s, isIdle=%s, maxPrevExceeded=%s, extActive=%s\n",
+                cursorDelta, codexDelta, tostring(codexActive), tostring(cursorActive), tostring(isIdle), tostring(maxPreventionExceeded), tostring(externalActive)))
             df:close()
         end
     end
@@ -698,6 +1009,7 @@ function obj:checkIdleAndSleep()
     -- Store for sleep trigger logging
     self._lastClaudeDelta = claudeDelta
     self._lastCursorDelta = cursorDelta
+    self._lastCodexDelta = codexDelta
 
     -- Check if we're in grace period after triggering sleep
     local inGracePeriod = false
@@ -727,6 +1039,17 @@ function obj:checkIdleAndSleep()
             self.sleepTriggerPending = false
         end
         -- If in grace period, don't reset - let the sleep attempt complete
+    end
+
+    local lockPreventionActive = self.mode == "keepUnlocked"
+        and not isIdle
+        and not inGracePeriod
+        and not maxPreventionExceeded
+
+    if lockPreventionActive then
+        self:startPreventLockTimer()
+    else
+        self:stopPreventLockTimer()
     end
 
     -- Manage caffeinate: keep ON while screen locked UNTIL idle threshold reached or max prevention exceeded
@@ -762,10 +1085,21 @@ function obj:checkIdleAndSleep()
     if maxPreventionExceeded then
         extraStatus = extraStatus .. ", MAX_PREV_EXCEEDED"
     end
-    local logMsg = string.format("[AntiSleep] Check: screen=%s, Claude=%s, Cursor=%s, caffeinate=%s, idle=%ds/%ds%s",
+    if externalActive then
+        extraStatus = extraStatus .. ", KEL_PIPELINE"
+    end
+    if lockPreventionActive then
+        extraStatus = extraStatus .. ", LOCK_PREVENT"
+    end
+    if codexInCooldown then
+        local cooldownRemaining = self.codexActiveCooldown - (os.time() - self.lastCodexActiveTime)
+        extraStatus = extraStatus .. string.format(", CODEX_COOLDOWN=%ds", cooldownRemaining)
+    end
+    local logMsg = string.format("[AntiSleep] Check: screen=%s, Claude=%s, Cursor=%s, Codex=%s, caffeinate=%s, idle=%ds/%ds%s",
         self.isScreenLocked and "LOCKED" or "UNLOCKED",
         self:formatBytes(claudeDelta),
         self:formatBytes(cursorDelta),
+        self:formatBytes(codexDelta),
         self.isCaffeinateRunning and "ON" or "OFF",
         self.consecutiveIdleSeconds,
         sleepThresholdSecs,
@@ -801,6 +1135,8 @@ function obj:start()
     self.startTime = os.time()
     self.lastClaudeBytes = nil
     self.lastCursorBytes = nil
+    self.lastCodexConns = nil
+    self.lastCodexActiveTime = nil
     self.consecutiveIdleSeconds = 0
     self.sleepTriggeredByUs = false
     self.sleepOccurredWhileLocked = false
@@ -850,7 +1186,12 @@ function obj:start()
 
     print("[AntiSleep] Started - monitoring for idle")
     if self.showAlerts then
-        local msg = string.format("👁 AntiSleep ON (sleep after %dm idle)", self.sleepIdleMinutes)
+        local msg
+        if self.mode == "keepUnlocked" then
+            msg = "🔓 AntiSleep ON (smart unlocked)"
+        else
+            msg = string.format("👁 AntiSleep ON (sleep after %dm idle)", self.sleepIdleMinutes)
+        end
         hs.alert.show(msg, 2)
     end
 
@@ -862,6 +1203,9 @@ end
 --- Pause monitoring but keep sleep watcher for auto-restart
 function obj:pause()
     if not self.enabled then return self end
+
+    -- Stop prevent-lock timer
+    self:stopPreventLockTimer()
 
     -- Stop caffeinate
     self:stopCaffeinate()
@@ -904,6 +1248,9 @@ end
 --- Stop smart sleep monitoring
 function obj:stop()
     if not self.enabled then return self end
+
+    -- Stop prevent-lock timer
+    self:stopPreventLockTimer()
 
     -- Stop caffeinate
     self:stopCaffeinate()
