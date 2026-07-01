@@ -1,0 +1,81 @@
+[
+  {
+    "name": "CaffBar",
+    "type": "Module",
+    "desc": "Smart awake management with AI traffic detection and an optional keep-unlocked mode.",
+    "items": [
+      {
+        "name": "mode",
+        "type": "Variable",
+        "def": "CaffBar.mode",
+        "desc": "Operating mode: \"smart\" or \"keepUnlocked\". Default: \"smart\""
+      },
+      {
+        "name": "autoLaunchHammerspoon",
+        "type": "Variable",
+        "def": "CaffBar.autoLaunchHammerspoon",
+        "desc": "Enable Hammerspoon launch at login when CaffBar is loaded. Default: true"
+      },
+      {
+        "name": "preventLockPulseInterval",
+        "type": "Variable",
+        "def": "CaffBar.preventLockPulseInterval",
+        "desc": "Seconds between user activity assertions in keepUnlocked mode. Default: 55"
+      },
+      {
+        "name": "showMenubar",
+        "type": "Variable",
+        "def": "CaffBar.showMenubar",
+        "desc": "Show menubar icon. Default: true"
+      },
+      {
+        "name": "showAlerts",
+        "type": "Variable",
+        "def": "CaffBar.showAlerts",
+        "desc": "Show on/off alerts. Default: true"
+      },
+      {
+        "name": "setMode",
+        "type": "Method",
+        "def": "CaffBar:setMode(mode)",
+        "desc": "Set operating mode to \"smart\" or \"keepUnlocked\""
+      },
+      {
+        "name": "startMode",
+        "type": "Method",
+        "def": "CaffBar:startMode(mode)",
+        "desc": "Set operating mode and start monitoring if needed"
+      },
+      {
+        "name": "start",
+        "type": "Method",
+        "def": "CaffBar:start()",
+        "desc": "Start anti-sleep protection"
+      },
+      {
+        "name": "stop",
+        "type": "Method",
+        "def": "CaffBar:stop()",
+        "desc": "Stop anti-sleep protection"
+      },
+      {
+        "name": "toggle",
+        "type": "Method",
+        "def": "CaffBar:toggle()",
+        "desc": "Toggle anti-sleep on/off"
+      },
+      {
+        "name": "isRunning",
+        "type": "Method",
+        "def": "CaffBar:isRunning()",
+        "desc": "Returns true if anti-sleep is currently active"
+      },
+      {
+        "name": "bindHotkeys",
+        "type": "Method",
+        "def": "CaffBar:bindHotkeys(mapping)",
+        "desc": "Bind hotkeys. mapping = {toggle = {{modifiers}, key}}"
+      }
+    ]
+  }
+]
