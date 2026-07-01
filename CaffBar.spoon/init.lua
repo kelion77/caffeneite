@@ -1,6 +1,6 @@
---- === AntiSleep ===
+--- === CaffBar ===
 ---
---- Smart sleep management for Claude Code / Codex / Cursor sessions.
+--- Smart awake management for Claude Code / Codex / Cursor sessions.
 --- Monitors user activity + AI tool traffic, triggers sleep when both are idle.
 ---
 --- Features:
@@ -15,11 +15,11 @@ local sourceFile = debug.getinfo(1, "S").source
 local spoonPath = sourceFile and sourceFile:match("^@(.+)/init%.lua$")
 
 -- Metadata
-obj.name = "AntiSleep"
+obj.name = "CaffBar"
 obj.version = "1.5.0"
-obj.author = "Your Name"
+obj.author = "sung-lee"
 obj.license = "MIT"
-obj.homepage = "https://github.com/yourusername/AntiSleep.spoon"
+obj.homepage = "https://github.com/kelion77/caffeneite"
 
 -- Internal state
 obj.enabled = false
@@ -55,6 +55,7 @@ obj._menubarIconCache = nil       -- cached hs.image objects
 -- Configuration
 obj.showMenubar = true          -- show menubar icon
 obj.showAlerts = true           -- show on/off alerts
+obj.autoLaunchHammerspoon = true -- launch Hammerspoon at login
 obj.preventLockPulseInterval = 55 -- seconds between user activity assertions in keep-unlocked mode
 obj.menubarIconSize = 24        -- status bar icon size in pixels
 obj.menubarIcons = {
@@ -116,7 +117,7 @@ obj.codexProcessNames = {
     "codex",
 }
 
---- AntiSleep:refreshCursorIPs()
+--- CaffBar:refreshCursorIPs()
 --- Method
 --- Add DNS-resolved IPs to static Cursor patterns
 function obj:refreshCursorIPs()
@@ -149,18 +150,30 @@ function obj:refreshCursorIPs()
     end
 
     self.cursorIpPatterns = patterns
-    local logMsg = string.format("[AntiSleep] Cursor IPs: %s", table.concat(patterns, ", "))
+    local logMsg = string.format("[CaffBar] Cursor IPs: %s", table.concat(patterns, ", "))
     print(logMsg)
-    local f = io.open("/tmp/antisleep.log", "a")
+    local f = io.open("/tmp/caffbar.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 end
 
---- AntiSleep:init()
+--- CaffBar:init()
 --- Method
 --- Initialize the Spoon
 function obj:init()
     -- SAFETY: Kill any orphan caffeinate from previous sessions
     hs.execute("killall caffeinate 2>/dev/null")
+
+    if self.autoLaunchHammerspoon and hs.autoLaunch then
+        local ok, err = pcall(function()
+            hs.autoLaunch(true)
+        end)
+        if not ok then
+            local logMsg = "[CaffBar] WARN: autoLaunch failed: " .. tostring(err)
+            print(logMsg)
+            local f = io.open("/tmp/caffbar.log", "a")
+            if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
+        end
+    end
 
     if self.showMenubar then
         self.menubar = hs.menubar.new()
@@ -169,11 +182,11 @@ function obj:init()
         end
     end
     self:updateMenubar()
-    print("[AntiSleep] Initialized")
+    print("[CaffBar] Initialized")
     return self
 end
 
---- AntiSleep:formatBytes(bytes)
+--- CaffBar:formatBytes(bytes)
 --- Method
 --- Format bytes to human readable string
 function obj:formatBytes(bytes)
@@ -188,17 +201,17 @@ function obj:formatBytes(bytes)
     end
 end
 
---- AntiSleep:updateMenubar()
+--- CaffBar:updateMenubar()
 --- Method
 --- Update menubar icon and tooltip
 function obj:updateMenubar()
     if not self.menubar then return end
 
-    local tooltip = "AntiSleep: "
+    local tooltip = "CaffBar: "
     if self.enabled then
         local elapsed = ""
         local status = ""
-        local modeLabel = self.mode == "keepUnlocked" and "Smart Unlocked" or "Smart Sleep"
+        local modeLabel = self.mode == "keepUnlocked" and "Smart Unlocked" or "Smart Awake"
         if self.startTime then
             local secs = os.time() - self.startTime
             local mins = math.floor(secs / 60)
@@ -229,7 +242,7 @@ function obj:updateMenubar()
     self.menubar:setTooltip(tooltip)
 end
 
---- AntiSleep:assetPath(relativePath)
+--- CaffBar:assetPath(relativePath)
 --- Method
 --- Resolve a path relative to this Spoon.
 function obj:assetPath(relativePath)
@@ -237,7 +250,7 @@ function obj:assetPath(relativePath)
     return self.spoonPath .. "/" .. relativePath
 end
 
---- AntiSleep:loadMenubarIcon(state)
+--- CaffBar:loadMenubarIcon(state)
 --- Method
 --- Load and cache a menu bar icon for a state.
 function obj:loadMenubarIcon(state)
@@ -260,7 +273,7 @@ function obj:loadMenubarIcon(state)
     return icon
 end
 
---- AntiSleep:setMenubarIcon(state)
+--- CaffBar:setMenubarIcon(state)
 --- Method
 --- Set the menu bar icon image for a state.
 function obj:setMenubarIcon(state)
@@ -273,13 +286,13 @@ function obj:setMenubarIcon(state)
     return true
 end
 
---- AntiSleep:menuItems()
+--- CaffBar:menuItems()
 --- Method
 --- Build menubar menu items
 function obj:menuItems()
-    local modeLabel = self.mode == "keepUnlocked" and "Smart Unlocked" or "Smart Sleep"
+    local modeLabel = self.mode == "keepUnlocked" and "Smart Unlocked" or "Smart Awake"
     local statusLabel = self.enabled and ("Status: ON - " .. modeLabel) or "Status: OFF"
-    local smartTitle = self.enabled and "Smart Sleep" or "Start Smart Sleep"
+    local smartTitle = self.enabled and "Smart Awake" or "Start Smart Awake"
     local keepUnlockedTitle = self.enabled and "Smart Unlocked" or "Start Smart Unlocked"
 
     return {
@@ -292,7 +305,7 @@ function obj:menuItems()
     }
 end
 
---- AntiSleep:startMode(mode)
+--- CaffBar:startMode(mode)
 --- Method
 --- Select a mode and start monitoring if needed.
 function obj:startMode(mode)
@@ -303,7 +316,7 @@ function obj:startMode(mode)
     return self
 end
 
---- AntiSleep:setMode(mode)
+--- CaffBar:setMode(mode)
 --- Method
 --- Set operating mode: smart or keepUnlocked
 function obj:setMode(mode)
@@ -334,15 +347,15 @@ function obj:setMode(mode)
 
     if self.showAlerts then
         local msg = self.mode == "keepUnlocked"
-            and "🔓 AntiSleep: Smart Unlocked"
-            or "👁 AntiSleep: Smart Sleep"
+            and "🔓 CaffBar: Smart Unlocked"
+            or "👁 CaffBar: Smart Awake"
         hs.alert.show(msg, 2)
     end
 
     return self
 end
 
---- AntiSleep:isUserActive()
+--- CaffBar:isUserActive()
 --- Method
 --- Check if user is actively using the computer (based on system idle time)
 function obj:isUserActive()
@@ -350,14 +363,14 @@ function obj:isUserActive()
     return idleTime < self.userIdleThreshold
 end
 
---- AntiSleep:getUserIdleTime()
+--- CaffBar:getUserIdleTime()
 --- Method
 --- Get seconds since last user activity
 function obj:getUserIdleTime()
     return hs.host.idleTime()
 end
 
---- AntiSleep:dimScreen()
+--- CaffBar:dimScreen()
 --- Method
 --- Gradually dim the screen (only when user is idle)
 function obj:dimScreen()
@@ -374,9 +387,9 @@ function obj:dimScreen()
         if self.originalBrightness and self.currentBrightness then
             hs.brightness.set(self.originalBrightness)
             self.currentBrightness = nil
-            local logMsg = string.format("[AntiSleep] Dim: restored (userIdle=%.0fs < %ds)", idleTime, self.userIdleThreshold)
+            local logMsg = string.format("[CaffBar] Dim: restored (userIdle=%.0fs < %ds)", idleTime, self.userIdleThreshold)
             print(logMsg)
-            local f = io.open("/tmp/antisleep.log", "a")
+            local f = io.open("/tmp/caffbar.log", "a")
             if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
         end
         return
@@ -388,14 +401,14 @@ function obj:dimScreen()
         local newBrightness = math.max(currentBrightness - self.dimStep, self.dimMinBrightness)
         hs.brightness.set(newBrightness)
         self.currentBrightness = newBrightness
-        local logMsg = string.format("[AntiSleep] Dim: %d%% -> %d%% (userIdle=%.0fs)", currentBrightness, newBrightness, idleTime)
+        local logMsg = string.format("[CaffBar] Dim: %d%% -> %d%% (userIdle=%.0fs)", currentBrightness, newBrightness, idleTime)
         print(logMsg)
-        local f = io.open("/tmp/antisleep.log", "a")
+        local f = io.open("/tmp/caffbar.log", "a")
         if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
     end
 end
 
---- AntiSleep:restoreBrightness()
+--- CaffBar:restoreBrightness()
 --- Method
 --- Restore original screen brightness
 function obj:restoreBrightness()
@@ -406,7 +419,7 @@ function obj:restoreBrightness()
     end
 end
 
---- AntiSleep:getCodexTrafficBytes()
+--- CaffBar:getCodexTrafficBytes()
 --- Method
 --- Get total bytes transferred by Codex processes (per-process via nettop)
 function obj:getCodexTrafficBytes()
@@ -429,7 +442,7 @@ function obj:getCodexTrafficBytes()
     return total
 end
 
---- AntiSleep:getCodexTrafficDelta()
+--- CaffBar:getCodexTrafficDelta()
 --- Method
 --- Get bytes transferred by Codex processes since the last call, tracked
 --- PER CONNECTION. nettop reports cumulative bytes of currently open
@@ -477,7 +490,7 @@ function obj:getCodexTrafficDelta()
     return delta
 end
 
---- AntiSleep:getTrafficBytesSeparate()
+--- CaffBar:getTrafficBytesSeparate()
 --- Method
 --- Get bytes transferred separately for Claude and Cursor (netstat IP-based).
 --- Codex is measured separately via getCodexTrafficDelta() (per-connection).
@@ -512,7 +525,7 @@ function obj:getTrafficBytesSeparate()
     return claudeBytes, cursorBytes
 end
 
---- AntiSleep:getApiTrafficBytes()
+--- CaffBar:getApiTrafficBytes()
 --- Method
 --- Get total bytes transferred to/from AI APIs (Anthropic + Cursor + Codex)
 function obj:getApiTrafficBytes()
@@ -520,7 +533,7 @@ function obj:getApiTrafficBytes()
     return claudeBytes + cursorBytes + self:getCodexTrafficBytes()
 end
 
---- AntiSleep:pulseUserActivity()
+--- CaffBar:pulseUserActivity()
 --- Method
 --- Tell macOS the user is active so idle lock/screen saver does not start.
 function obj:pulseUserActivity()
@@ -530,14 +543,14 @@ function obj:pulseUserActivity()
         hs.caffeinate.declareUserActivity()
     end)
     if not ok then
-        local logMsg = "[AntiSleep] WARN: declareUserActivity failed: " .. tostring(err)
+        local logMsg = "[CaffBar] WARN: declareUserActivity failed: " .. tostring(err)
         print(logMsg)
-        local f = io.open("/tmp/antisleep.log", "a")
+        local f = io.open("/tmp/caffbar.log", "a")
         if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
     end
 end
 
---- AntiSleep:startPreventLockTimer()
+--- CaffBar:startPreventLockTimer()
 --- Method
 --- Start periodic user activity assertions for keep-unlocked mode.
 function obj:startPreventLockTimer()
@@ -548,13 +561,13 @@ function obj:startPreventLockTimer()
         self:pulseUserActivity()
     end)
 
-    local logMsg = "[AntiSleep] Prevent-lock timer started"
+    local logMsg = "[CaffBar] Prevent-lock timer started"
     print(logMsg)
-    local f = io.open("/tmp/antisleep.log", "a")
+    local f = io.open("/tmp/caffbar.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 end
 
---- AntiSleep:stopPreventLockTimer()
+--- CaffBar:stopPreventLockTimer()
 --- Method
 --- Stop periodic user activity assertions.
 function obj:stopPreventLockTimer()
@@ -562,14 +575,14 @@ function obj:stopPreventLockTimer()
         self.preventLockTimer:stop()
         self.preventLockTimer = nil
 
-        local logMsg = "[AntiSleep] Prevent-lock timer stopped"
+        local logMsg = "[CaffBar] Prevent-lock timer stopped"
         print(logMsg)
-        local f = io.open("/tmp/antisleep.log", "a")
+        local f = io.open("/tmp/caffbar.log", "a")
         if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
     end
 end
 
---- AntiSleep:startCaffeinate()
+--- CaffBar:startCaffeinate()
 --- Method
 --- Start caffeinate to prevent sleep. keepUnlocked also prevents display sleep.
 function obj:startCaffeinate()
@@ -599,13 +612,13 @@ function obj:startCaffeinate()
     self.isCaffeinateRunning = true
     self.caffeinateMode = targetMode
 
-    local logMsg = string.format("[AntiSleep] Caffeinate started (%s mode)", targetMode)
+    local logMsg = string.format("[CaffBar] Caffeinate started (%s mode)", targetMode)
     print(logMsg)
-    local f = io.open("/tmp/antisleep.log", "a")
+    local f = io.open("/tmp/caffbar.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 end
 
---- AntiSleep:stopCaffeinate()
+--- CaffBar:stopCaffeinate()
 --- Method
 --- Stop caffeinate to allow system sleep
 function obj:stopCaffeinate()
@@ -622,13 +635,13 @@ function obj:stopCaffeinate()
     self.isCaffeinateRunning = false
     self.caffeinateMode = nil
 
-    local logMsg = "[AntiSleep] Caffeinate stopped (sleep prevention OFF)"
+    local logMsg = "[CaffBar] Caffeinate stopped (sleep prevention OFF)"
     print(logMsg)
-    local f = io.open("/tmp/antisleep.log", "a")
+    local f = io.open("/tmp/caffbar.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 end
 
---- AntiSleep:triggerSleep()
+--- CaffBar:triggerSleep()
 --- Method
 --- Trigger system sleep via pmset sleepnow
 function obj:triggerSleep()
@@ -639,10 +652,10 @@ function obj:triggerSleep()
     local thresholdStr = self:formatBytes(self.minTrafficBytes)
 
     -- Log the event with reason
-    local logMsg = string.format("[AntiSleep] Auto-sleep: Claude=%s, Cursor=%s, Codex=%s (threshold=%s) → pausing and sleeping",
+    local logMsg = string.format("[CaffBar] Auto-sleep: Claude=%s, Cursor=%s, Codex=%s (threshold=%s) → pausing and sleeping",
         claudeStr, cursorStr, codexStr, thresholdStr)
     print(logMsg)
-    local f = io.open("/tmp/antisleep.log", "a")
+    local f = io.open("/tmp/caffbar.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
     -- Record that WE triggered this sleep
@@ -651,16 +664,16 @@ function obj:triggerSleep()
     self.screenLockedTime = self.screenLockedTime or os.time()
     self.preventionDuration = os.time() - self.screenLockedTime
 
-    -- Pause AntiSleep (timers and caffeinate stop, but sleepWatcher stays active)
+    -- Pause CaffBar (timers and caffeinate stop, but sleepWatcher stays active)
     self:pause()
 
     -- Small delay to ensure caffeinate is fully dead, then trigger sleep
     hs.timer.doAfter(0.5, function()
         -- Abort if user unlocked screen during the delay
         if not self.isScreenLocked then
-            local abortMsg = "[AntiSleep] Sleep aborted - screen was unlocked during delay"
+            local abortMsg = "[CaffBar] Sleep aborted - screen was unlocked during delay"
             print(abortMsg)
-            local af = io.open("/tmp/antisleep.log", "a")
+            local af = io.open("/tmp/caffbar.log", "a")
             if af then af:write(os.date("%H:%M:%S ") .. abortMsg .. "\n"); af:close() end
             self.sleepTriggeredByUs = false
             self.sleepTriggerPending = false
@@ -669,14 +682,14 @@ function obj:triggerSleep()
         end
 
         local output = hs.execute("pmset sleepnow 2>&1")
-        local logMsg2 = "[AntiSleep] pmset sleepnow executed"
+        local logMsg2 = "[CaffBar] pmset sleepnow executed"
         print(logMsg2)
-        local f2 = io.open("/tmp/antisleep.log", "a")
+        local f2 = io.open("/tmp/caffbar.log", "a")
         if f2 then f2:write(os.date("%H:%M:%S ") .. logMsg2 .. "\n"); f2:close() end
     end)
 end
 
---- AntiSleep:setupSleepWatcher()
+--- CaffBar:setupSleepWatcher()
 --- Method
 --- Setup watcher to detect system wake and screen lock events
 function obj:setupSleepWatcher()
@@ -695,9 +708,9 @@ function obj:setupSleepWatcher()
             [hs.caffeinate.watcher.sessionDidBecomeActive] = "sessionDidBecomeActive",
         }
         local eventName = eventNames[eventType] or ("unknown:" .. tostring(eventType))
-        local logMsg = string.format("[AntiSleep] Event: %s", eventName)
+        local logMsg = string.format("[CaffBar] Event: %s", eventName)
         print(logMsg)
-        local f = io.open("/tmp/antisleep.log", "a")
+        local f = io.open("/tmp/caffbar.log", "a")
         if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
         if eventType == hs.caffeinate.watcher.systemDidWake then
@@ -712,9 +725,9 @@ function obj:setupSleepWatcher()
 
             -- Safety net: if wake suppression was active, force restart monitoring
             if self_ref.sleepTriggeredByUs then
-                local logMsg = "[AntiSleep] Screen unlocked while suppressed - force restarting monitoring"
+                local logMsg = "[CaffBar] Screen unlocked while suppressed - force restarting monitoring"
                 print(logMsg)
-                local f = io.open("/tmp/antisleep.log", "a")
+                local f = io.open("/tmp/caffbar.log", "a")
                 if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
                 self_ref.sleepTriggeredByUs = false
@@ -754,10 +767,10 @@ function obj:setupSleepWatcher()
         end
     end)
     self.sleepWatcher:start()
-    print("[AntiSleep] Sleep watcher started")
+    print("[CaffBar] Sleep watcher started")
 end
 
---- AntiSleep:formatDuration(seconds)
+--- CaffBar:formatDuration(seconds)
 --- Method
 --- Format duration: show seconds if < 1 min, otherwise minutes
 function obj:formatDuration(seconds)
@@ -770,7 +783,7 @@ function obj:formatDuration(seconds)
     end
 end
 
---- AntiSleep:getWakeReason()
+--- CaffBar:getWakeReason()
 --- Method
 --- Determine if this wake was user-initiated or automatic (Power Nap / DarkWake)
 --- Returns: wakeType ("user"|"darkwake"|"unknown"), detail (log excerpt)
@@ -812,7 +825,7 @@ function obj:getWakeReason()
     return "unknown", lastLine
 end
 
---- AntiSleep:onSystemWake()
+--- CaffBar:onSystemWake()
 --- Method
 --- Handle system wake event - show notification if sleep occurred while screen was locked
 function obj:onSystemWake()
@@ -820,9 +833,9 @@ function obj:onSystemWake()
     if self.sleepTriggeredByUs then
         local wakeType, wakeDetail = self:getWakeReason()
 
-        local logMsg = string.format("[AntiSleep] Wake detected (our sleep): type=%s, detail=%s", wakeType, wakeDetail)
+        local logMsg = string.format("[CaffBar] Wake detected (our sleep): type=%s, detail=%s", wakeType, wakeDetail)
         print(logMsg)
-        local f = io.open("/tmp/antisleep.log", "a")
+        local f = io.open("/tmp/caffbar.log", "a")
         if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
         if wakeType ~= "user" then
@@ -834,17 +847,17 @@ function obj:onSystemWake()
             self.lastSleepTime = os.time()  -- accurate sleep duration for next wake
             self.autoWakeSuppressCount = (self.autoWakeSuppressCount or 0) + 1
 
-            local suppressMsg = string.format("[AntiSleep] Suppressing restart (automatic wake: %s, count=%d) - system will re-sleep naturally", wakeType, self.autoWakeSuppressCount)
+            local suppressMsg = string.format("[CaffBar] Suppressing restart (automatic wake: %s, count=%d) - system will re-sleep naturally", wakeType, self.autoWakeSuppressCount)
             print(suppressMsg)
-            local sf = io.open("/tmp/antisleep.log", "a")
+            local sf = io.open("/tmp/caffbar.log", "a")
             if sf then sf:write(os.date("%H:%M:%S ") .. suppressMsg .. "\n"); sf:close() end
             return  -- do NOT restart monitoring
         end
 
         -- User wake - fall through to normal wake handling
-        local userMsg = "[AntiSleep] User wake confirmed - proceeding with normal restart"
+        local userMsg = "[CaffBar] User wake confirmed - proceeding with normal restart"
         print(userMsg)
-        local uf = io.open("/tmp/antisleep.log", "a")
+        local uf = io.open("/tmp/caffbar.log", "a")
         if uf then uf:write(os.date("%H:%M:%S ") .. userMsg .. "\n"); uf:close() end
     end
 
@@ -868,15 +881,15 @@ function obj:onSystemWake()
         end
 
         -- Log wake event
-        local logMsg = string.format("[AntiSleep] Woke from sleep (prevented: %s, slept: %s, reason: %s)",
+        local logMsg = string.format("[CaffBar] Woke from sleep (prevented: %s, slept: %s, reason: %s)",
             preventionStr, sleepStr, reason)
         print(logMsg)
-        local f = io.open("/tmp/antisleep.log", "a")
+        local f = io.open("/tmp/caffbar.log", "a")
         if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
         -- System notification (stays in Notification Center)
         hs.notify.new({
-            title = "AntiSleep: Sleep Occurred",
+            title = "CaffBar: Sleep Occurred",
             informativeText = string.format(
                 "Prevented: %s\nSlept: %s\nReason: %s",
                 preventionStr,
@@ -903,16 +916,16 @@ function obj:onSystemWake()
 
     -- Auto-restart if sleepWatcher is active but monitoring is paused
     if self.sleepWatcher and not self.enabled then
-        local logMsg = "[AntiSleep] Auto-restarting after wake"
+        local logMsg = "[CaffBar] Auto-restarting after wake"
         print(logMsg)
-        local f = io.open("/tmp/antisleep.log", "a")
+        local f = io.open("/tmp/caffbar.log", "a")
         if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
         self:start()
     end
 end
 
---- AntiSleep:checkIdleAndSleep()
+--- CaffBar:checkIdleAndSleep()
 --- Method
 --- Check if screen is locked and AI tools are idle, trigger sleep if threshold reached
 function obj:checkIdleAndSleep()
@@ -924,9 +937,9 @@ function obj:checkIdleAndSleep()
     if self.lastSleepTime and not self.sleepOccurredWhileLocked then
         local timeSinceSleep = os.time() - self.lastSleepTime
         if timeSinceSleep > 300 then  -- 5 minutes - definitely stale
-            local logMsg = string.format("[AntiSleep] WARN: Detected stale sleep state (%d sec old), resetting", timeSinceSleep)
+            local logMsg = string.format("[CaffBar] WARN: Detected stale sleep state (%d sec old), resetting", timeSinceSleep)
             print(logMsg)
-            local f = io.open("/tmp/antisleep.log", "a")
+            local f = io.open("/tmp/caffbar.log", "a")
             if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
             self.lastSleepTime = nil
@@ -998,7 +1011,7 @@ function obj:checkIdleAndSleep()
 
     -- DEBUG: Log comparison values
     if self.isScreenLocked then
-        local df = io.open("/tmp/antisleep.log", "a")
+        local df = io.open("/tmp/caffbar.log", "a")
         if df then
             df:write(os.date("%H:%M:%S ") .. string.format("[DEBUG] cursorDelta=%d, codexDelta=%d, codexActive=%s, cursorActive=%s, isIdle=%s, maxPrevExceeded=%s, extActive=%s\n",
                 cursorDelta, codexDelta, tostring(codexActive), tostring(cursorActive), tostring(isIdle), tostring(maxPreventionExceeded), tostring(externalActive)))
@@ -1033,7 +1046,7 @@ function obj:checkIdleAndSleep()
             -- Only reset if NOT in grace period
             if self.consecutiveIdleSeconds > 0 then
                 local reason = not self.isScreenLocked and "screen unlocked" or "AI active"
-                print("[AntiSleep] " .. reason .. ", resetting idle counter")
+                print("[CaffBar] " .. reason .. ", resetting idle counter")
             end
             self.consecutiveIdleSeconds = 0
             self.sleepTriggerPending = false
@@ -1095,7 +1108,7 @@ function obj:checkIdleAndSleep()
         local cooldownRemaining = self.codexActiveCooldown - (os.time() - self.lastCodexActiveTime)
         extraStatus = extraStatus .. string.format(", CODEX_COOLDOWN=%ds", cooldownRemaining)
     end
-    local logMsg = string.format("[AntiSleep] Check: screen=%s, Claude=%s, Cursor=%s, Codex=%s, caffeinate=%s, idle=%ds/%ds%s",
+    local logMsg = string.format("[CaffBar] Check: screen=%s, Claude=%s, Cursor=%s, Codex=%s, caffeinate=%s, idle=%ds/%ds%s",
         self.isScreenLocked and "LOCKED" or "UNLOCKED",
         self:formatBytes(claudeDelta),
         self:formatBytes(cursorDelta),
@@ -1105,7 +1118,7 @@ function obj:checkIdleAndSleep()
         sleepThresholdSecs,
         extraStatus)
     print(logMsg)
-    local f = io.open("/tmp/antisleep.log", "a")
+    local f = io.open("/tmp/caffbar.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
     -- Trigger sleep if threshold reached OR max prevention exceeded (only once per cycle)
@@ -1121,9 +1134,9 @@ function obj:checkIdleAndSleep()
     self:updateMenubar()
 end
 
---- AntiSleep:start()
+--- CaffBar:start()
 --- Method
---- Start smart sleep monitoring
+--- Start smart awake monitoring
 function obj:start()
     if self.enabled then return self end
 
@@ -1169,8 +1182,8 @@ function obj:start()
                 self_ref:checkIdleAndSleep()
             end)
             if not ok then
-                local ef = io.open("/tmp/antisleep.log", "a")
-                if ef then ef:write(os.date("%H:%M:%S ") .. "[AntiSleep] ERROR: " .. tostring(err) .. "\n"); ef:close() end
+                local ef = io.open("/tmp/caffbar.log", "a")
+                if ef then ef:write(os.date("%H:%M:%S ") .. "[CaffBar] ERROR: " .. tostring(err) .. "\n"); ef:close() end
             end
         end)
     end
@@ -1184,13 +1197,13 @@ function obj:start()
     self.enabled = true
     self:updateMenubar()
 
-    print("[AntiSleep] Started - monitoring for idle")
+    print("[CaffBar] Started - monitoring for idle")
     if self.showAlerts then
         local msg
         if self.mode == "keepUnlocked" then
-            msg = "🔓 AntiSleep ON (smart unlocked)"
+            msg = "🔓 CaffBar ON (smart unlocked)"
         else
-            msg = string.format("👁 AntiSleep ON (sleep after %dm idle)", self.sleepIdleMinutes)
+            msg = string.format("👁 CaffBar ON (sleep after %dm idle)", self.sleepIdleMinutes)
         end
         hs.alert.show(msg, 2)
     end
@@ -1198,7 +1211,7 @@ function obj:start()
     return self
 end
 
---- AntiSleep:pause()
+--- CaffBar:pause()
 --- Method
 --- Pause monitoring but keep sleep watcher for auto-restart
 function obj:pause()
@@ -1239,13 +1252,13 @@ function obj:pause()
     self.enabled = false
     self:updateMenubar()
 
-    print("[AntiSleep] Paused (sleepWatcher still active)")
+    print("[CaffBar] Paused (sleepWatcher still active)")
     return self
 end
 
---- AntiSleep:stop()
+--- CaffBar:stop()
 --- Method
---- Stop smart sleep monitoring
+--- Stop smart awake monitoring
 function obj:stop()
     if not self.enabled then return self end
 
@@ -1287,15 +1300,15 @@ function obj:stop()
     self.enabled = false
     self:updateMenubar()
 
-    print("[AntiSleep] Stopped")
+    print("[CaffBar] Stopped")
     if self.showAlerts then
-        hs.alert.show("💤 AntiSleep OFF", 1)
+        hs.alert.show("💤 CaffBar OFF", 1)
     end
 
     return self
 end
 
---- AntiSleep:toggle()
+--- CaffBar:toggle()
 --- Method
 --- Toggle anti-sleep on/off
 function obj:toggle()
@@ -1307,16 +1320,16 @@ function obj:toggle()
     return self
 end
 
---- AntiSleep:isRunning()
+--- CaffBar:isRunning()
 --- Method
 --- Returns true if anti-sleep is currently active
 function obj:isRunning()
     return self.enabled
 end
 
---- AntiSleep:bindHotkeys(mapping)
+--- CaffBar:bindHotkeys(mapping)
 --- Method
---- Bind hotkeys for AntiSleep
+--- Bind hotkeys for CaffBar
 function obj:bindHotkeys(mapping)
     local def = {
         toggle = function() self:toggle() end

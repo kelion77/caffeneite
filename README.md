@@ -1,8 +1,8 @@
-# AntiSleep.spoon
+# CaffBar.spoon
 
 [한국어 버전](README.ko.md)
 
-A Hammerspoon Spoon for smart sleep management during Claude Code, Codex and Cursor sessions. Monitors user activity + AI API traffic, and triggers sleep when both are idle.
+A Hammerspoon Spoon for smart awake management during Claude Code, Codex and Cursor sessions. Monitors user activity + AI API traffic, and triggers sleep when both are idle.
 
 ## Features
 
@@ -20,23 +20,31 @@ A Hammerspoon Spoon for smart sleep management during Claude Code, Codex and Cur
 ### Option 1: Clone directly to Spoons folder
 
 ```bash
-git clone https://github.com/kelion77/caffeneite.git ~/.hammerspoon/Spoons/AntiSleep.spoon
+git clone https://github.com/kelion77/caffeneite.git ~/.hammerspoon/Spoons/CaffBar.spoon
 ```
 
 ### Option 2: Download and copy
 
 ```bash
-cp -r AntiSleep.spoon ~/.hammerspoon/Spoons/
+cp -r CaffBar.spoon ~/.hammerspoon/Spoons/
 ```
+
+### Option 3: Install with login auto-start
+
+```bash
+./install.sh
+```
+
+The installer copies `CaffBar.spoon`, enables Hammerspoon launch at login, and writes an idempotent startup block that always starts CaffBar in Smart Awake mode (`smart`).
 
 ## Usage
 
 Add to your `~/.hammerspoon/init.lua`:
 
 ```lua
-hs.loadSpoon("AntiSleep")
-spoon.AntiSleep:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}})
-spoon.AntiSleep:start()
+hs.loadSpoon("CaffBar")
+spoon.CaffBar:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}})
+spoon.CaffBar:startMode("smart")
 ```
 
 Then reload Hammerspoon config.
@@ -44,45 +52,46 @@ Then reload Hammerspoon config.
 ## Configuration
 
 ```lua
-hs.loadSpoon("AntiSleep")
+hs.loadSpoon("CaffBar")
 
 -- Mode settings
-spoon.AntiSleep.mode = "smart"                -- "smart" or "keepUnlocked" (default: "smart")
-spoon.AntiSleep.preventLockPulseInterval = 55 -- user activity pulse interval in Smart Unlocked mode
+spoon.CaffBar.mode = "smart"                -- "smart" or "keepUnlocked" (default: "smart")
+spoon.CaffBar.autoLaunchHammerspoon = true  -- launch Hammerspoon at login (default: true)
+spoon.CaffBar.preventLockPulseInterval = 55 -- user activity pulse interval in Smart Unlocked mode
 
 -- Sleep trigger settings
-spoon.AntiSleep.sleepIdleMinutes = 2            -- sleep after X min idle (default: 2)
-spoon.AntiSleep.enableAutoSleep = true          -- enable auto sleep (default: true)
-spoon.AntiSleep.idleCheckInterval = 60          -- check every X sec (default: 60)
-spoon.AntiSleep.minTrafficBytes = 50000         -- min bytes to consider Claude active (default: 50KB)
-spoon.AntiSleep.minCursorTrafficBytes = 500000  -- min bytes to consider Cursor active (default: 500KB)
-spoon.AntiSleep.minCodexTrafficBytes = 50000    -- min bytes to consider Codex active (default: 50KB)
-spoon.AntiSleep.codexActiveCooldown = 600       -- keep Codex active for X sec after last burst (default: 10 min)
-spoon.AntiSleep.userIdleThreshold = 120         -- user idle after X sec (default: 120)
-spoon.AntiSleep.maxPreventionMinutes = 60       -- force sleep after screen locked for X min (default: 60)
+spoon.CaffBar.sleepIdleMinutes = 2            -- sleep after X min idle (default: 2)
+spoon.CaffBar.enableAutoSleep = true          -- enable auto sleep (default: true)
+spoon.CaffBar.idleCheckInterval = 60          -- check every X sec (default: 60)
+spoon.CaffBar.minTrafficBytes = 50000         -- min bytes to consider Claude active (default: 50KB)
+spoon.CaffBar.minCursorTrafficBytes = 500000  -- min bytes to consider Cursor active (default: 500KB)
+spoon.CaffBar.minCodexTrafficBytes = 50000    -- min bytes to consider Codex active (default: 50KB)
+spoon.CaffBar.codexActiveCooldown = 600       -- keep Codex active for X sec after last burst (default: 10 min)
+spoon.CaffBar.userIdleThreshold = 120         -- user idle after X sec (default: 120)
+spoon.CaffBar.maxPreventionMinutes = 60       -- force sleep after screen locked for X min (default: 60)
 
 -- Dimming settings
-spoon.AntiSleep.enableDimming = true        -- enable screen dimming (default: true)
-spoon.AntiSleep.dimStartDelay = 300         -- start dimming after 5 min (default: 300)
-spoon.AntiSleep.dimInterval = 60            -- dim every 60 sec (default: 60)
-spoon.AntiSleep.dimStep = 5                 -- reduce by 5% each step (default: 5)
-spoon.AntiSleep.dimMinBrightness = 20       -- minimum brightness % (default: 20)
+spoon.CaffBar.enableDimming = true        -- enable screen dimming (default: true)
+spoon.CaffBar.dimStartDelay = 300         -- start dimming after 5 min (default: 300)
+spoon.CaffBar.dimInterval = 60            -- dim every 60 sec (default: 60)
+spoon.CaffBar.dimStep = 5                 -- reduce by 5% each step (default: 5)
+spoon.CaffBar.dimMinBrightness = 20       -- minimum brightness % (default: 20)
 
 -- UI settings
-spoon.AntiSleep.showMenubar = true          -- show menubar icon (default: true)
-spoon.AntiSleep.showAlerts = true           -- show on/off alerts (default: true)
+spoon.CaffBar.showMenubar = true          -- show menubar icon (default: true)
+spoon.CaffBar.showAlerts = true           -- show on/off alerts (default: true)
 
-spoon.AntiSleep:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}})
-spoon.AntiSleep:start()
+spoon.CaffBar:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}})
+spoon.CaffBar:startMode("smart")
 ```
 
 ## How It Works
 
 ### 1. Modes
 
-AntiSleep has two modes:
-- **Smart Sleep** (`smart`): Existing behavior. AI traffic keeps the Mac awake, but display sleep and screen lock are allowed. Once the screen is locked and AI tools are idle, AntiSleep can trigger system sleep.
-- **Smart Unlocked** (`keepUnlocked`): Uses the same AI traffic detection as Smart Sleep, but while Claude, Codex or Cursor is active it also prevents idle display sleep/screen lock. When all tools are idle, lock prevention stops.
+CaffBar has two modes:
+- **Smart Awake** (`smart`): Existing behavior. AI traffic keeps the Mac awake, but display sleep and screen lock are allowed. Once the screen is locked and AI tools are idle, CaffBar can trigger system sleep.
+- **Smart Unlocked** (`keepUnlocked`): Uses the same AI traffic detection as Smart Awake, but while Claude, Codex or Cursor is active it also prevents idle display sleep/screen lock. When all tools are idle, lock prevention stops.
 
 ### 2. Activity Monitoring
 
@@ -108,7 +117,7 @@ Traffic is tracked **per connection**, not as a process-level sum: nettop report
 
 **Activity cooldown**: Real Codex work has quiet stretches — local builds/tests between API calls, long server-side reasoning, connection closes reading as zero delta. To avoid sleeping mid-work, Codex stays "active" for `codexActiveCooldown` (default 10 min) after the last traffic burst. `maxPreventionMinutes` still bounds total awake time.
 
-### 3. Smart Sleep Trigger
+### 3. Smart Awake Trigger
 
 **IMPORTANT**: Sleep is only triggered when the screen is locked or turned off.
 
@@ -136,7 +145,7 @@ Every 60 seconds:
 
 ### 4. Sleep Prevention (caffeinate)
 
-In Smart Sleep mode, when Claude, Codex or Cursor is active:
+In Smart Awake mode, when Claude, Codex or Cursor is active:
 - `caffeinate -is` is started to prevent idle/system sleep
 - Display sleep still works, so screen lock is allowed
 - When all become idle, caffeinate stops
@@ -151,7 +160,7 @@ In Smart Unlocked mode, when Claude, Codex or Cursor is active:
 When you return from auto-sleep:
 - System notification shows when sleep occurred and duration
 - On-screen alert: "Woke from auto-sleep (X min)"
-- Logged to `/tmp/antisleep.log`
+- Logged to `/tmp/caffbar.log`
 
 ### 6. Screen Dimming
 
@@ -161,25 +170,25 @@ After 5 minutes, gradually dims screen by 5% per minute until 20% minimum. Origi
 
 ```bash
 # Watch log in real-time
-tail -f /tmp/antisleep.log
+tail -f /tmp/caffbar.log
 
 # Or open Hammerspoon Console: click menubar icon → Console
 ```
 
 Log output example:
 ```
-07:41:36 [AntiSleep] Check: screen=UNLOCKED, Claude=525.2 KB, Cursor=1.2 MB, Codex=3.4 MB, caffeinate=ON, idle=0s/120s
-07:42:36 [AntiSleep] Check: screen=UNLOCKED, Claude=0 B, Cursor=0 B, Codex=0 B, caffeinate=OFF, idle=0s/120s
-07:43:00 [AntiSleep] Event: screensDidLock
-07:45:00 [AntiSleep] Auto-sleep triggered (ran for 45 min)
-08:30:00 [AntiSleep] Woke from auto-sleep (duration: 45 min)
+07:41:36 [CaffBar] Check: screen=UNLOCKED, Claude=525.2 KB, Cursor=1.2 MB, Codex=3.4 MB, caffeinate=ON, idle=0s/120s
+07:42:36 [CaffBar] Check: screen=UNLOCKED, Claude=0 B, Cursor=0 B, Codex=0 B, caffeinate=OFF, idle=0s/120s
+07:43:00 [CaffBar] Event: screensDidLock
+07:45:00 [CaffBar] Auto-sleep triggered (ran for 45 min)
+08:30:00 [CaffBar] Woke from auto-sleep (duration: 45 min)
 ```
 
 ## API
 
 | Method | Description |
 |--------|-------------|
-| `:start()` | Start smart sleep monitoring |
+| `:start()` | Start smart awake monitoring |
 | `:stop()` | Stop monitoring completely (including sleepWatcher) |
 | `:pause()` | Pause monitoring but keep sleepWatcher for auto-restart |
 | `:toggle()` | Toggle on/off |
