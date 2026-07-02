@@ -20,6 +20,7 @@ obj.version = "1.5.0"
 obj.author = "sung-lee"
 obj.license = "MIT"
 obj.homepage = "https://github.com/kelion77/caffeneite"
+obj.settingsKeyPrefix = "CaffBar"
 
 -- Internal state
 obj.enabled = false
@@ -42,7 +43,8 @@ obj.sleepTriggeredByUs = false
 obj.lastSleepTime = nil
 obj.sleepOccurredWhileLocked = false  -- track if sleep happened while screen locked
 obj.screenLockedTime = nil            -- when screen was locked (for prevention time calc)
-obj.preventionDuration = nil          -- how long sleep was prevented (lock → sleep)
+obj.preventionStartedTime = nil       -- when CaffBar began preventing sleep/lock due to activity
+obj.preventionDuration = nil          -- how long CaffBar prevented sleep/lock before sleep
 obj.sleepTriggerPending = false       -- prevent repeated pmset sleepnow calls
 obj.sleepTriggeredTime = nil          -- when sleep was triggered (for grace period)
 obj.isScreenLocked = false        -- track if screen is locked
@@ -85,7 +87,23 @@ obj.codexActiveCooldown = 600       -- keep Codex "active" for X sec after last 
                                     -- long server-side reasoning, and connection-close artifacts
 obj.userIdleThreshold = 120     -- user idle seconds to consider user "inactive" (2 min)
 obj.sleepGracePeriod = 180      -- don't restart caffeinate for X sec after sleep trigger (3 min)
-obj.maxPreventionMinutes = 60   -- force sleep after screen locked for this long, regardless of traffic
+obj.maxPreventionMinutes = 60   -- cap sleep/lock prevention duration; set 0 or false for unlimited
+obj.maxPreventionOptions = {
+    { label = "Unlimited (no max cap)", value = false },
+    { label = "30 min", value = 30 },
+    { label = "1 hour", value = 60 },
+    { label = "2 hours", value = 120 },
+    { label = "3 hours", value = 180 },
+    { label = "4 hours", value = 240 },
+    { label = "5 hours", value = 300 },
+    { label = "6 hours", value = 360 },
+    { label = "7 hours", value = 420 },
+    { label = "8 hours", value = 480 },
+    { label = "9 hours", value = 540 },
+    { label = "10 hours", value = 600 },
+    { label = "11 hours", value = 660 },
+    { label = "12 hours", value = 720 },
+}
 
 -- API IP patterns
 obj.claudeIpPatterns = {
@@ -160,6 +178,11 @@ end
 --- Method
 --- Initialize the Spoon
 function obj:init()
+    local savedMaxPrevention = hs.settings.get(self.settingsKeyPrefix .. ".maxPreventionMinutes")
+    if savedMaxPrevention ~= nil then
+        self.maxPreventionMinutes = savedMaxPrevention
+    end
+
     -- SAFETY: Kill any orphan caffeinate from previous sessions
     hs.execute("killall caffeinate 2>/dev/null")
 
@@ -231,6 +254,7 @@ function obj:updateMenubar()
 
             -- Show caffeinate status
             status = status .. string.format("\nCaffeinate: %s", self.isCaffeinateRunning and "ON" or "OFF")
+            status = status .. string.format("\nMax prevention: %s", self:maxPreventionLabel())
         end
         self:setMenubarIcon(self.mode)
         tooltip = tooltip .. modeLabel .. elapsed .. status
@@ -286,6 +310,68 @@ function obj:setMenubarIcon(state)
     return true
 end
 
+--- CaffBar:maxPreventionLabel()
+--- Method
+--- Return a display label for the current max prevention setting.
+function obj:maxPreventionLabel()
+    local minutes = self.maxPreventionMinutes
+    if type(minutes) ~= "number" or minutes <= 0 then
+        return "Unlimited"
+    end
+    if minutes >= 60 and minutes % 60 == 0 then
+        local hours = minutes / 60
+        return hours == 1 and "1 hour" or string.format("%d hours", hours)
+    end
+    return string.format("%d min", minutes)
+end
+
+--- CaffBar:setMaxPreventionMinutes(minutes)
+--- Method
+--- Set max prevention duration. Use 0 or false to disable.
+function obj:setMaxPreventionMinutes(minutes)
+    local value = minutes
+    if type(value) ~= "number" or value <= 0 then
+        value = false
+    end
+
+    self.maxPreventionMinutes = value
+    hs.settings.set(self.settingsKeyPrefix .. ".maxPreventionMinutes", value)
+    self:updateMenubar()
+
+    if self.showAlerts then
+        hs.alert.show("CaffBar max prevention: " .. self:maxPreventionLabel(), 2)
+    end
+
+    return self
+end
+
+--- CaffBar:maxPreventionMenuItems()
+--- Method
+--- Build max prevention selection menu items.
+function obj:maxPreventionMenuItems()
+    local current = self.maxPreventionMinutes
+    local items = {}
+
+    for _, option in ipairs(self.maxPreventionOptions) do
+        local optionLabel = option.label
+        local optionValue = option.value
+        local selected
+        if type(optionValue) == "number" then
+            selected = current == optionValue
+        else
+            selected = type(current) ~= "number" or current <= 0
+        end
+
+        table.insert(items, {
+            title = optionLabel,
+            checked = selected,
+            fn = function() self:setMaxPreventionMinutes(optionValue) end,
+        })
+    end
+
+    return items
+end
+
 --- CaffBar:menuItems()
 --- Method
 --- Build menubar menu items
@@ -294,12 +380,15 @@ function obj:menuItems()
     local statusLabel = self.enabled and ("Status: ON - " .. modeLabel) or "Status: OFF"
     local smartTitle = self.enabled and "Smart Awake" or "Start Smart Awake"
     local keepUnlockedTitle = self.enabled and "Smart Unlocked" or "Start Smart Unlocked"
+    local maxPreventionTitle = "Max Prevention: " .. self:maxPreventionLabel()
 
     return {
         { title = statusLabel, disabled = true },
         { title = "-" },
         { title = smartTitle, checked = self.enabled and self.mode == "smart", fn = function() self:startMode("smart") end },
         { title = keepUnlockedTitle, checked = self.enabled and self.mode == "keepUnlocked", fn = function() self:startMode("keepUnlocked") end },
+        { title = "-" },
+        { title = maxPreventionTitle, menu = self:maxPreventionMenuItems() },
         { title = "-" },
         { title = "Stop", disabled = not self.enabled, fn = function() self:stop() end },
     }
@@ -662,7 +751,8 @@ function obj:triggerSleep()
     self.sleepTriggeredByUs = true
     self.lastSleepTime = os.time()
     self.screenLockedTime = self.screenLockedTime or os.time()
-    self.preventionDuration = os.time() - self.screenLockedTime
+    local preventionStart = self.preventionStartedTime or self.screenLockedTime or os.time()
+    self.preventionDuration = os.time() - preventionStart
 
     -- Pause CaffBar (timers and caffeinate stop, but sleepWatcher stays active)
     self:pause()
@@ -757,9 +847,10 @@ function obj:setupSleepWatcher()
             if self_ref.isScreenLocked then
                 self_ref.sleepOccurredWhileLocked = true
                 self_ref.lastSleepTime = os.time()
-                -- Calculate prevention time (lock → sleep)
-                if self_ref.screenLockedTime then
-                    self_ref.preventionDuration = os.time() - self_ref.screenLockedTime
+                -- Calculate prevention time from when CaffBar started holding sleep/lock off.
+                local preventionStart = self_ref.preventionStartedTime or self_ref.screenLockedTime
+                if preventionStart then
+                    self_ref.preventionDuration = os.time() - preventionStart
                 else
                     self_ref.preventionDuration = 0
                 end
@@ -1000,21 +1091,29 @@ function obj:checkIdleAndSleep()
 
     local isIdle = not claudeActive and not cursorActive and not codexActive and not externalActive
 
-    -- Check max prevention time (force sleep if screen locked too long)
+    -- Check max prevention time (cap total sleep/lock prevention time).
+    -- maxPreventionMinutes can be disabled with 0 or false.
     local maxPreventionExceeded = false
-    if self.isScreenLocked and self.screenLockedTime then
-        local lockedDuration = os.time() - self.screenLockedTime
-        if lockedDuration >= self.maxPreventionMinutes * 60 then
+    local maxPreventionMinutes = self.maxPreventionMinutes
+    local maxPreventionEnabled = type(maxPreventionMinutes) == "number" and maxPreventionMinutes > 0
+    local preventionActive = not isIdle
+    if maxPreventionEnabled and preventionActive then
+        self.preventionStartedTime = self.preventionStartedTime or os.time()
+        local preventionDuration = os.time() - self.preventionStartedTime
+        if preventionDuration >= maxPreventionMinutes * 60 then
             maxPreventionExceeded = true
         end
+    else
+        self.preventionStartedTime = nil
     end
 
     -- DEBUG: Log comparison values
-    if self.isScreenLocked then
+    if self.isScreenLocked or (self.mode == "keepUnlocked" and preventionActive) then
         local df = io.open("/tmp/caffbar.log", "a")
         if df then
-            df:write(os.date("%H:%M:%S ") .. string.format("[DEBUG] cursorDelta=%d, codexDelta=%d, codexActive=%s, cursorActive=%s, isIdle=%s, maxPrevExceeded=%s, extActive=%s\n",
-                cursorDelta, codexDelta, tostring(codexActive), tostring(cursorActive), tostring(isIdle), tostring(maxPreventionExceeded), tostring(externalActive)))
+            local preventionDuration = self.preventionStartedTime and (os.time() - self.preventionStartedTime) or 0
+            df:write(os.date("%H:%M:%S ") .. string.format("[DEBUG] cursorDelta=%d, codexDelta=%d, codexActive=%s, cursorActive=%s, isIdle=%s, maxPrevExceeded=%s, prevention=%ds, extActive=%s\n",
+                cursorDelta, codexDelta, tostring(codexActive), tostring(cursorActive), tostring(isIdle), tostring(maxPreventionExceeded), preventionDuration, tostring(externalActive)))
             df:close()
         end
     end
@@ -1096,7 +1195,8 @@ function obj:checkIdleAndSleep()
         extraStatus = string.format(", GRACE=%ds", remaining)
     end
     if maxPreventionExceeded then
-        extraStatus = extraStatus .. ", MAX_PREV_EXCEEDED"
+        local preventionDuration = self.preventionStartedTime and (os.time() - self.preventionStartedTime) or 0
+        extraStatus = extraStatus .. string.format(", MAX_PREV_EXCEEDED=%s", self:formatDuration(preventionDuration))
     end
     if externalActive then
         extraStatus = extraStatus .. ", KEL_PIPELINE"
@@ -1121,9 +1221,10 @@ function obj:checkIdleAndSleep()
     local f = io.open("/tmp/caffbar.log", "a")
     if f then f:write(os.date("%H:%M:%S ") .. logMsg .. "\n"); f:close() end
 
-    -- Trigger sleep if threshold reached OR max prevention exceeded (only once per cycle)
-    local shouldSleep = self.isScreenLocked and self.consecutiveIdleSeconds >= sleepThresholdSecs
-        and (isIdle or maxPreventionExceeded)
+    -- Trigger sleep immediately when max prevention is exceeded while locked/off.
+    -- Otherwise, wait for the normal idle threshold.
+    local shouldSleep = self.isScreenLocked
+        and (maxPreventionExceeded or (isIdle and self.consecutiveIdleSeconds >= sleepThresholdSecs))
     if shouldSleep then
         if not self.sleepTriggerPending then
             self.sleepTriggerPending = true
@@ -1157,6 +1258,7 @@ function obj:start()
     self.sleepTriggeredTime = nil
     self.lastSleepTime = nil
     self.screenLockedTime = nil
+    self.preventionStartedTime = nil
     self.preventionDuration = nil
     self.isScreenLocked = false
 
@@ -1249,6 +1351,7 @@ function obj:pause()
 
     self.startTime = nil
     self.consecutiveIdleSeconds = 0
+    self.preventionStartedTime = nil
     self.enabled = false
     self:updateMenubar()
 
@@ -1297,6 +1400,7 @@ function obj:stop()
 
     self.startTime = nil
     self.consecutiveIdleSeconds = 0
+    self.preventionStartedTime = nil
     self.enabled = false
     self:updateMenubar()
 

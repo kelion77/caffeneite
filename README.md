@@ -68,7 +68,7 @@ spoon.CaffBar.minCursorTrafficBytes = 500000  -- min bytes to consider Cursor ac
 spoon.CaffBar.minCodexTrafficBytes = 50000    -- min bytes to consider Codex active (default: 50KB)
 spoon.CaffBar.codexActiveCooldown = 600       -- keep Codex active for X sec after last burst (default: 10 min)
 spoon.CaffBar.userIdleThreshold = 120         -- user idle after X sec (default: 120)
-spoon.CaffBar.maxPreventionMinutes = 60       -- force sleep after screen locked for X min (default: 60)
+spoon.CaffBar.maxPreventionMinutes = 60       -- cap sleep/lock prevention at X min; 0/false = unlimited (default: 60)
 
 -- Dimming settings
 spoon.CaffBar.enableDimming = true        -- enable screen dimming (default: true)
@@ -115,7 +115,7 @@ Codex talks to Cloudflare-shared endpoints (`api.openai.com`, `chatgpt.com`) —
 
 Traffic is tracked **per connection**, not as a process-level sum: nettop reports cumulative bytes of currently open connections, so a process-level sum drops whenever a connection closes — which can mask a real burst on another connection or read as a phantom change. Per-connection counters only grow during a connection's lifetime: ongoing connections contribute their positive delta, new connections count in full, and closed connections simply drop out.
 
-**Activity cooldown**: Real Codex work has quiet stretches — local builds/tests between API calls, long server-side reasoning, connection closes reading as zero delta. To avoid sleeping mid-work, Codex stays "active" for `codexActiveCooldown` (default 10 min) after the last traffic burst. `maxPreventionMinutes` still bounds total awake time.
+**Activity cooldown**: Real Codex work has quiet stretches — local builds/tests between API calls, long server-side reasoning, connection closes reading as zero delta. To avoid sleeping mid-work, Codex stays "active" for `codexActiveCooldown` (default 10 min) after the last traffic burst. `maxPreventionMinutes` still bounds total sleep/lock prevention time unless it is set to `0` or `false`.
 
 ### 3. Smart Awake Trigger
 
@@ -136,7 +136,9 @@ Every 60 seconds:
 └─ SCREEN UNLOCKED or ANY AI ACTIVE → reset counter
 ```
 
-**Max Prevention Time**: Even if AI traffic is detected, sleep is forced after 60 minutes of screen lock to prevent battery drain from background traffic.
+**Max Prevention Time**: Even if AI traffic is detected, CaffBar stops preventing sleep/lock after 60 minutes by default to avoid battery drain from background traffic. In Smart Unlocked mode, this allows normal lock/sleep to resume; if the screen is already locked/off, CaffBar triggers sleep immediately. Set `spoon.CaffBar.maxPreventionMinutes = 0` or `false` for unlimited prevention.
+
+You can also change this from the CaffBar menubar menu: **Max Prevention** → **Unlimited (no max cap)**, **30 min**, or **1 hour** through **12 hours**. Menu selections are saved and reused after Hammerspoon restarts.
 
 **Auto-restart after sleep**:
 - When sleep is triggered, monitoring pauses but sleepWatcher stays active

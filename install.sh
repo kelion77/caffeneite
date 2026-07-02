@@ -23,6 +23,16 @@ echo "✅ Installed to $SPOON_DIR/CaffBar.spoon"
 echo ""
 
 touch "$INIT_FILE"
+existing_max_prevention="$(
+    awk '
+        /^[[:space:]]*spoon\.(CaffBar|AntiSleep)\.maxPreventionMinutes[[:space:]]*=/ {
+            gsub(/spoon\.AntiSleep\./, "spoon.CaffBar.")
+            sub(/^[[:space:]]+/, "")
+            print
+            exit
+        }
+    ' "$INIT_FILE"
+)"
 tmp_file="$(mktemp)"
 awk -v start="$START_MARKER" -v end="$END_MARKER" '
     /^-- ============================================$/ {
@@ -45,6 +55,9 @@ awk -v start="$START_MARKER" -v end="$END_MARKER" '
     }
     $0 == start { skip = 1; next }
     $0 == end { skip = 0; next }
+    /^hs\.loadSpoon\("CaffBar"\)$/ { next }
+    /^spoon\.CaffBar\./ { next }
+    /^spoon\.CaffBar:/ { next }
     /^hs\.loadSpoon\("AntiSleep"\)$/ { next }
     /^spoon\.AntiSleep\./ { next }
     /^spoon\.AntiSleep:/ { next }
@@ -63,6 +76,13 @@ cat >> "$INIT_FILE" <<'LUA'
 hs.autoLaunch(true)
 hs.loadSpoon("CaffBar")
 spoon.CaffBar.showMenubar = true
+LUA
+
+if [ -n "$existing_max_prevention" ]; then
+    printf '%s\n' "$existing_max_prevention" >> "$INIT_FILE"
+fi
+
+cat >> "$INIT_FILE" <<'LUA'
 spoon.CaffBar:bindHotkeys({toggle = {{"shift", "cmd"}, "k"}})
 spoon.CaffBar:startMode("smart")
 -- END CaffBar auto-start

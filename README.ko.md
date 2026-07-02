@@ -68,7 +68,7 @@ spoon.CaffBar.minCursorTrafficBytes = 500000  -- Cursor 활성 판단 최소 바
 spoon.CaffBar.minCodexTrafficBytes = 50000    -- Codex 활성 판단 최소 바이트 (기본값: 50KB)
 spoon.CaffBar.codexActiveCooldown = 600       -- 마지막 버스트 후 X초간 Codex 활성 유지 (기본값: 10분)
 spoon.CaffBar.userIdleThreshold = 120         -- X초 후 사용자 유휴 (기본값: 120)
-spoon.CaffBar.maxPreventionMinutes = 60       -- 화면 잠금 후 X분 경과 시 강제 잠자기 (기본값: 60)
+spoon.CaffBar.maxPreventionMinutes = 60       -- sleep/lock 방지를 X분으로 제한; 0/false = 무제한 (기본값: 60)
 
 -- 화면 어둡게 설정
 spoon.CaffBar.enableDimming = true        -- 화면 어둡게 활성화 (기본값: true)
@@ -115,7 +115,7 @@ Codex는 Cloudflare 공유 엔드포인트(`api.openai.com`, `chatgpt.com`)와 �
 
 트래픽은 프로세스 합계가 아닌 **연결 단위**로 추적합니다: nettop은 현재 열려 있는 연결의 누적 바이트를 보고하므로, 프로세스 합계는 연결 하나가 닫힐 때마다 줄어들어 다른 연결의 실제 버스트를 가리거나 가짜 변화로 읽힐 수 있습니다. 연결별 카운터는 수명 동안 증가만 하므로: 유지 중인 연결은 양수 델타만 기여하고, 새 연결은 전체 바이트가 집계되며, 닫힌 연결은 그냥 제외됩니다.
 
-**활성 쿨다운**: 실제 Codex 작업 중에도 조용한 구간이 존재합니다 — API 호출 사이의 로컬 빌드/테스트, 긴 서버사이드 reasoning, 연결 종료로 인한 0 델타 등. 작업 중 잠자기를 방지하기 위해 마지막 트래픽 버스트 후 `codexActiveCooldown`(기본 10분) 동안 Codex를 활성 상태로 유지합니다. 총 깨어있는 시간은 `maxPreventionMinutes`로 여전히 제한됩니다.
+**활성 쿨다운**: 실제 Codex 작업 중에도 조용한 구간이 존재합니다 — API 호출 사이의 로컬 빌드/테스트, 긴 서버사이드 reasoning, 연결 종료로 인한 0 델타 등. 작업 중 잠자기를 방지하기 위해 마지막 트래픽 버스트 후 `codexActiveCooldown`(기본 10분) 동안 Codex를 활성 상태로 유지합니다. `maxPreventionMinutes`를 `0` 또는 `false`로 설정하지 않는 한 총 sleep/lock 방지 시간은 이 값으로 제한됩니다.
 
 ### 3. Smart Awake 트리거
 
@@ -136,7 +136,9 @@ Codex는 Cloudflare 공유 엔드포인트(`api.openai.com`, `chatgpt.com`)와 �
 └─ 화면 해제 또는 AI 활성 → 카운터 리셋
 ```
 
-**최대 방지 시간**: AI 트래픽이 감지되더라도 화면 잠금 후 60분이 지나면 강제로 잠자기를 허용하여 백그라운드 트래픽으로 인한 배터리 소모를 방지합니다.
+**최대 방지 시간**: AI 트래픽이 감지되더라도 기본 60분 뒤에는 CaffBar가 sleep/lock 방지를 중단해 백그라운드 트래픽으로 인한 배터리 소모를 막습니다. Smart Unlocked 모드에서는 일반 lock/sleep이 다시 가능해지고, 이미 화면이 잠겼거나 꺼진 상태라면 즉시 sleep을 트리거합니다. `spoon.CaffBar.maxPreventionMinutes = 0` 또는 `false`로 설정하면 무제한 방지가 됩니다.
+
+CaffBar 메뉴바 메뉴에서도 바꿀 수 있습니다: **Max Prevention** → **Unlimited (no max cap)**, **30 min**, 또는 **1 hour**부터 **12 hours**까지. 메뉴에서 고른 값은 저장되며 Hammerspoon 재시작 후에도 유지됩니다.
 
 **잠자기 후 자동 재시작**:
 - 잠자기 트리거 시 모니터링은 일시정지되지만 sleepWatcher는 활성 유지

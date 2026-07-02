@@ -23,6 +23,12 @@
         "desc": "Seconds between user activity assertions in keepUnlocked mode. Default: 55"
       },
       {
+        "name": "maxPreventionMinutes",
+        "type": "Variable",
+        "def": "CaffBar.maxPreventionMinutes",
+        "desc": "Cap total sleep/lock prevention after this many minutes even when AI traffic is active. Set to 0 or false for unlimited prevention. Default: 60"
+      },
+      {
         "name": "showMenubar",
         "type": "Variable",
         "def": "CaffBar.showMenubar",
